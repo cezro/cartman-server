@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { order_type, order_status } from '@prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 
+const WALLET_LOCK_FLOOR = -200_000n; // -₱2,000 in centavos
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -10,27 +12,28 @@ export class OrdersService {
     private readonly ledgerService: LedgerService
   ) {}
 
-  // Helper for straight-line distance
+  // Haversine straight-line distance in km
   private getDistanceInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
-    const R = 6371; // Radius of the earth in km
+    const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
       Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance in km
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   async placeFoodOrder(customerId: string, data: any) {
-    // Expects { merchant_id, items: [{ menu_item_id, qty, modifiers }] }
     const { merchant_id, items } = data;
     if (!items || items.length === 0) {
       throw new BadRequestException('Order must contain items');
     }
 
     return this.prisma.$transaction(async (tx) => {
+      const merchant = await tx.merchants.findUnique({ where: { id: merchant_id } });
+      if (!merchant) throw new BadRequestException('Merchant not found');
+
       let subtotal = 0n;
       const orderItemsData = [];
 
@@ -43,8 +46,7 @@ export class OrdersService {
           throw new BadRequestException(`Item ${menuItem.name} is out of stock`);
         }
 
-        const lineTotal = BigInt(menuItem.price) * BigInt(item.qty);
-        subtotal += lineTotal;
+        subtotal += BigInt(menuItem.price) * BigInt(item.qty);
 
         orderItemsData.push({
           menu_item_id: menuItem.id,
@@ -55,18 +57,20 @@ export class OrdersService {
         });
       }
 
-      // Hardcoded delivery fee placeholder for food (e.g. 50 pesos = 5000 centavos)
-      const delivery_fee = 5000n; 
+      const delivery_fee = merchant.delivery_fee;
+      const delivery_payout = delivery_fee; // rider gets full delivery fee (v1)
       const total = subtotal + delivery_fee;
 
       return tx.orders.create({
         data: {
           customer_id: customerId,
           merchant_id,
+          merchant_name: merchant.name,
           type: order_type.food,
           status: order_status.pending,
           subtotal,
           delivery_fee,
+          delivery_payout,
           total,
           order_items: {
             create: orderItemsData,
@@ -79,8 +83,8 @@ export class OrdersService {
 
   async placeErrandOrder(customerId: string, data: any) {
     const { errand_payload, notes } = data;
-    // Hardcoded delivery fee placeholder for errand (e.g. 100 pesos)
-    const delivery_fee = 10000n; 
+    const delivery_fee = 10000n; // ₱100 — errand base fee
+    const delivery_payout = delivery_fee;
 
     return this.prisma.orders.create({
       data: {
@@ -88,6 +92,7 @@ export class OrdersService {
         type: order_type.errand,
         status: order_status.pending,
         delivery_fee,
+        delivery_payout,
         total: delivery_fee,
         errand_payload,
         notes,
@@ -97,15 +102,20 @@ export class OrdersService {
 
   async placeCourierOrder(customerId: string, data: any) {
     const { pickup_lat, pickup_lng, pickup_text, dropoff_lat, dropoff_lng, dropoff_text, notes, recipient_name, recipient_phone } = data;
-    
+
     if (!pickup_lat || !pickup_lng || !dropoff_lat || !dropoff_lng) {
       throw new BadRequestException('Pickup and dropoff coordinates are required');
     }
 
     const distanceKm = this.getDistanceInKm(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng);
-    
-    // Base fee: 50 pesos (5000 centavos). Per km: 15 pesos (1500 centavos).
-    const delivery_fee = 5000n + BigInt(Math.round(distanceKm * 1500));
+
+    // Fare: ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢)
+    const BASE = 4000n;
+    const PER_KM = 1200n;
+    const MIN_FEE = 5000n;
+    const raw = BASE + BigInt(Math.round(distanceKm)) * PER_KM;
+    const delivery_fee = raw < MIN_FEE ? MIN_FEE : raw;
+    const delivery_payout = delivery_fee;
 
     return this.prisma.orders.create({
       data: {
@@ -115,9 +125,10 @@ export class OrdersService {
         pickup_lat, pickup_lng, pickup_text,
         dropoff_lat, dropoff_lng, dropoff_text,
         delivery_fee,
+        delivery_payout,
         total: delivery_fee,
         notes,
-        recipient_name, recipient_phone
+        recipient_name, recipient_phone,
       },
     });
   }
@@ -129,13 +140,11 @@ export class OrdersService {
       take: 20,
       include: {
         merchant: { select: { name: true, image_url: true } },
-      }
+      },
     });
   }
 
   async updateStatus(orderId: string, status: order_status) {
-    // Security note: In a real app, you'd verify the merchant_id owns the order
-    // before allowing a status update.
     return this.prisma.orders.update({
       where: { id: orderId },
       data: { status },
@@ -143,6 +152,16 @@ export class OrdersService {
   }
 
   async claimOrder(orderId: string, riderId: string) {
+    const rider = await this.prisma.riders.findUnique({ where: { id: riderId } });
+    if (!rider?.is_active) {
+      throw new BadRequestException('Go on-duty before claiming orders');
+    }
+
+    const netCash = await this.ledgerService.getNetCash(riderId);
+    if (netCash <= WALLET_LOCK_FLOOR) {
+      throw new BadRequestException('Wallet locked — remit cash before accepting orders');
+    }
+
     const result = await this.prisma.orders.updateMany({
       where: {
         id: orderId,
@@ -173,22 +192,21 @@ export class OrdersService {
       },
     });
 
-    // Auto ledger logic when order is marked as delivered
     if (newStatus === order_status.delivered) {
-      // 1. Credit Delivery Reward
+      // Credit rider's delivery share (delivery_payout, not the full delivery_fee)
       await this.ledgerService.createManualTransaction(
         riderId,
         'credit_delivery_reward',
-        Number(order.delivery_fee), // Rider earns the delivery fee
+        Number(order.delivery_payout),
         order.id
       );
 
-      // 2. Debit COD Liability
+      // Debit COD liability — amount is positive; sign comes from txn type
       if (order.payment === 'cod') {
         await this.ledgerService.createManualTransaction(
           riderId,
           'debit_cod_order',
-          -Number(order.total), // Deduct full order amount (cash they are holding)
+          Number(order.total),
           order.id
         );
       }

@@ -16,7 +16,7 @@ import { PrismaService } from '../prisma/prisma.service';
 export class OtpService {
   private readonly RATE_LIMIT_WINDOW_MIN = 15;
   private readonly RATE_LIMIT_MAX = 3;
-  private readonly OTP_EXPIRY_MIN = 5;
+  private readonly OTP_EXPIRY_MIN = 10;
   private readonly MAX_ATTEMPTS = 5;
 
   constructor(private readonly prisma: PrismaService) {}
@@ -45,7 +45,7 @@ export class OtpService {
 
     // Generate 6-digit code
     const code = randomInt(100000, 999999).toString();
-    const codeHash = createHash('sha256').update(code).digest('hex');
+    const codeHash = createHash('sha256').update(`${phone}:${code}`).digest('hex');
     const expiresAt = new Date(
       Date.now() + this.OTP_EXPIRY_MIN * 60 * 1000,
     );
@@ -80,7 +80,7 @@ export class OtpService {
     phone: string,
     code: string,
   ): Promise<{ verified: boolean }> {
-    const codeHash = createHash('sha256').update(code).digest('hex');
+    const codeHash = createHash('sha256').update(`${phone}:${code}`).digest('hex');
 
     // Find the latest unconsumed OTP for this phone
     const otpRecord = await this.prisma.otp_codes.findFirst({
@@ -145,7 +145,7 @@ export class OtpService {
       return;
     }
 
-    const message = `Your Cartman verification code is: ${code}. Valid for 5 minutes.`;
+    const message = `Your Cartman verification code is: ${code}. Valid for 10 minutes.`;
 
     const response = await fetch('https://api.semaphore.co/api/v4/messages', {
       method: 'POST',
