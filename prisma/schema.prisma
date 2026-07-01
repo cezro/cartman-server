@@ -1,0 +1,308 @@
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ Cartman Server — Prisma Schema                                          ║
+// ║ Mirrors cartman-mobile/supabase/migrations/20260630000100_schema.sql    ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
+// Money is stored as BigInt centavos (₱99.00 = 9900).
+// Column names match the existing DB exactly.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ── Enums (mirror models/enums.dart .wire values) ───────────────────────
+
+enum order_status {
+  pending
+  preparing
+  ready_for_pickup
+  accepted
+  arrived_at_merchant
+  picked_up
+  in_transit
+  delivered
+  canceled
+}
+
+enum order_type {
+  food
+  grocery
+  errand
+  pickup_delivery
+  ride
+  multi_stop
+}
+
+enum payment_method {
+  cod
+  gcash
+  maya
+  card
+  cart_credits
+}
+
+enum wallet_txn_type {
+  credit_remittance
+  debit_cod_order
+  credit_delivery_reward
+  debit_commission
+}
+
+// ── profiles — identity, extends auth.users ─────────────────────────────
+
+model profiles {
+  id              String   @id @db.Uuid
+  full_name       String   @default("")
+  phone           String?  @unique
+  phone_verified  Boolean  @default(false)
+  role            String   @default("customer")
+  avatar_url      String?
+  membership_tier String   @default("Bronze")
+  cart_points     BigInt   @default(0)
+  wallet_centavos BigInt   @default(0)
+  created_at      DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  addresses                addresses[]
+  orders_as_customer       orders[]           @relation("customer_orders")
+  orders_as_rider          orders[]           @relation("rider_orders")
+  rider                    riders?
+  device_tokens            device_tokens[]
+  otp_codes                otp_codes[]
+}
+
+// ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
+
+model addresses {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String   @db.Uuid
+  label        String   @default("")
+  text_address String
+  lat          Float
+  lng          Float
+  is_default   Boolean  @default(false)
+  created_at   DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  profile profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+}
+
+// ── merchants + menu ────────────────────────────────────────────────────
+
+model merchants {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  category     String   @default("")
+  rating       Decimal  @default(0)
+  delivery_fee BigInt   @default(0)
+  min_order    BigInt   @default(0)
+  eta_minutes  Int      @default(0)
+  is_open      Boolean  @default(true)
+  image_url    String?
+  promo_text   String?
+  created_at   DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  menu_items menu_items[]
+  orders     orders[]
+}
+
+model menu_items {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchant_id String  @db.Uuid
+  name        String
+  price       BigInt  @default(0)
+  category    String  @default("")
+  in_stock    Boolean @default(true)
+  description String?
+  modifiers   Json    @default("[]")
+
+  // Relations
+  merchant    merchants    @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+  order_items order_items[]
+
+  @@index([merchant_id])
+}
+
+// ── orders — central table for ALL order types ──────────────────────────
+
+model orders {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ref_no            String?        @unique
+  customer_id       String         @db.Uuid
+  assigned_rider_id String?        @db.Uuid
+  type              order_type
+  status            order_status   @default(pending)
+  merchant_id       String?        @db.Uuid
+  merchant_name     String?
+  payment           payment_method @default(cod)
+
+  // Geocoded endpoints
+  pickup_lat   Float?
+  pickup_lng   Float?
+  pickup_text  String?
+  dropoff_lat  Float?
+  dropoff_lng  Float?
+  dropoff_text String?
+
+  // Money (centavos)
+  subtotal        BigInt @default(0)
+  delivery_fee    BigInt @default(0)
+  discount        BigInt @default(0)
+  total           BigInt @default(0)
+  delivery_payout BigInt @default(0)
+
+  // Free-form payloads
+  errand_payload  Json?
+  notes           String?
+  merchant_notes  String?
+  rider_notes     String?
+  recipient_name  String?
+  recipient_phone String?
+
+  created_at DateTime @default(now()) @db.Timestamptz()
+  updated_at DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  customer               profiles                    @relation("customer_orders", fields: [customer_id], references: [id])
+  rider                  profiles?                   @relation("rider_orders", fields: [assigned_rider_id], references: [id])
+  merchant               merchants?                  @relation(fields: [merchant_id], references: [id])
+  order_items            order_items[]
+  order_stops            order_stops[]
+  rider_locations        rider_locations[]
+  wallet_transactions    rider_wallet_transactions[]
+
+  @@index([customer_id])
+  @@index([assigned_rider_id])
+  @@index([status])
+}
+
+// ── order_items — structured food/grocery lines ─────────────────────────
+
+model order_items {
+  id           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id     String @db.Uuid
+  menu_item_id String? @db.Uuid
+  name         String
+  qty          Int    @default(1)
+  unit_price   BigInt @default(0)
+  modifiers    Json   @default("[]")
+
+  // Relations
+  order     orders      @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  menu_item menu_items? @relation(fields: [menu_item_id], references: [id])
+
+  @@index([order_id])
+}
+
+// ── order_stops — Multi-Stop Builder ────────────────────────────────────
+
+model order_stops {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id String @db.Uuid
+  seq      Int    @default(0)
+  kind     String @default("deliver")
+  label    String @default("")
+  lat      Float  @default(0)
+  lng      Float  @default(0)
+  payload  Json?
+
+  // Relations
+  order orders @relation(fields: [order_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id])
+}
+
+// ── riders — rider state (R-4.2) ────────────────────────────────────────
+
+model riders {
+  id               String   @id @db.Uuid
+  is_active        Boolean  @default(false)
+  vehicle          String   @default("")
+  plate_no         String   @default("")
+  rating           Decimal  @default(5.0)
+  acceptance_rate  Decimal  @default(1.0)
+  total_trips      Int      @default(0)
+  broadcast_count  Int      @default(0)
+  avg_duration_secs Int     @default(0)
+  updated_at       DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  profile              profiles                    @relation(fields: [id], references: [id], onDelete: Cascade)
+  rider_locations      rider_locations[]
+  wallet_transactions  rider_wallet_transactions[]
+}
+
+// ── rider_locations — background telemetry (R-2.1) ──────────────────────
+
+model rider_locations {
+  id          BigInt   @id @default(autoincrement())
+  rider_id    String   @db.Uuid
+  lat         Float
+  lng         Float
+  order_id    String?  @db.Uuid
+  recorded_at DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  rider riders @relation(fields: [rider_id], references: [id], onDelete: Cascade)
+  order orders? @relation(fields: [order_id], references: [id])
+
+  @@index([rider_id, recorded_at(sort: Desc)])
+}
+
+// ── rider_wallet_transactions — APPEND-ONLY ledger (R-3.1) ──────────────
+
+model rider_wallet_transactions {
+  id         BigInt          @id @default(autoincrement())
+  rider_id   String          @db.Uuid
+  type       wallet_txn_type
+  amount     BigInt
+  order_id   String?         @db.Uuid
+  created_at DateTime        @default(now()) @db.Timestamptz()
+
+  // Relations
+  rider riders @relation(fields: [rider_id], references: [id], onDelete: Cascade)
+  order orders? @relation(fields: [order_id], references: [id])
+
+  @@index([rider_id, created_at(sort: Desc)])
+}
+
+// ── device_tokens — FCM push targets (C-4.2) ────────────────────────────
+
+model device_tokens {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  token      String
+  platform   String   @default("android")
+  updated_at DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  profile profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, token])
+  @@index([user_id])
+}
+
+// ── otp_codes — transactional SMS OTP (C-1.2) ───────────────────────────
+
+model otp_codes {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  phone      String
+  code_hash  String
+  user_id    String?  @db.Uuid
+  expires_at DateTime @db.Timestamptz()
+  consumed   Boolean  @default(false)
+  attempts   Int      @default(0)
+  created_at DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  profile profiles? @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([phone, created_at(sort: Desc)])
+}
