@@ -13,12 +13,27 @@ export class LedgerController {
 
   @Post('transactions')
   @Roles('admin')
-  createManualTransaction(@Body() data: { rider_id: string, type: wallet_txn_type, amount: number, order_id?: string }) {
-    return this.ledgerService.createManualTransaction(data.rider_id, data.type, data.amount, data.order_id).then(txn => ({
-      ...txn,
-      id: txn.id.toString(),
-      amount: txn.amount.toString()
-    }));
+  createManualTransaction(
+    @Body()
+    data: {
+      rider_id: string;
+      type: wallet_txn_type;
+      amount: number;
+      order_id?: string;
+    },
+  ) {
+    return this.ledgerService
+      .createManualTransaction(
+        data.rider_id,
+        data.type,
+        data.amount,
+        data.order_id,
+      )
+      .then((txn) => ({
+        ...txn,
+        id: txn.id.toString(),
+        amount: txn.amount.toString(),
+      }));
   }
 
   @Get('me/wallet')
@@ -30,10 +45,12 @@ export class LedgerController {
   @Get('me/transactions')
   @Roles('rider')
   getTransactions(@CurrentUser() user: AuthenticatedUser) {
-    return this.ledgerService.getTransactions(user.id).then(txns => txns.map(txn => ({
-      ...txn,
-      id: txn.id.toString(),
-      amount: txn.amount.toString()
-    })));
+    return this.ledgerService.getTransactions(user.id).then((txns) =>
+      txns.map((txn) => ({
+        ...txn,
+        id: txn.id.toString(),
+        amount: txn.amount.toString(),
+      })),
+    );
   }
 }

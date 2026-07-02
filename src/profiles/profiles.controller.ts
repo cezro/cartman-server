@@ -1,4 +1,13 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import { ProfilesService } from './profiles.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -25,12 +34,19 @@ export class ProfilesController {
   }
 
   @Put('me/addresses/:id')
-  updateAddress(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body() data: any) {
+  updateAddress(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() data: any,
+  ) {
     return this.profilesService.updateAddress(user.id, id, data);
   }
 
   @Delete('me/addresses/:id')
-  deleteAddress(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+  deleteAddress(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
     return this.profilesService.deleteAddress(user.id, id);
   }
 }

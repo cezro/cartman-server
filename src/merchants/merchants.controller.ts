@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Put, Delete, Patch, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Patch,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import { MerchantsService } from './merchants.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -17,7 +27,10 @@ export class MerchantsController {
 
   @Patch(':id/status')
   @Roles('admin') // Admin only
-  updateMerchantStatus(@Param('id') id: string, @Body('is_open') isOpen: boolean) {
+  updateMerchantStatus(
+    @Param('id') id: string,
+    @Body('is_open') isOpen: boolean,
+  ) {
     return this.merchantsService.updateMerchantStatus(id, isOpen);
   }
 
@@ -34,13 +47,21 @@ export class MerchantsController {
 
   @Put(':id/menu-items/:itemId')
   @Roles('merchant', 'admin')
-  updateMenuItem(@Param('id') id: string, @Param('itemId') itemId: string, @Body() data: any) {
+  updateMenuItem(
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+    @Body() data: any,
+  ) {
     return this.merchantsService.updateMenuItem(id, itemId, data);
   }
 
   @Patch(':id/menu-items/:itemId/stock')
   @Roles('merchant', 'admin')
-  toggleStock(@Param('id') id: string, @Param('itemId') itemId: string, @Body('in_stock') inStock: boolean) {
+  toggleStock(
+    @Param('id') id: string,
+    @Param('itemId') itemId: string,
+    @Body('in_stock') inStock: boolean,
+  ) {
     return this.merchantsService.toggleStock(id, itemId, inStock);
   }
 

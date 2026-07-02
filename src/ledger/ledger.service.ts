@@ -13,7 +13,12 @@ const LOCK_FLOOR = -200_000n; // -₱2,000 in centavos — mirrors accept_order(
 export class LedgerService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async createManualTransaction(riderId: string, type: wallet_txn_type, amount: number, orderId?: string) {
+  async createManualTransaction(
+    riderId: string,
+    type: wallet_txn_type,
+    amount: number,
+    orderId?: string,
+  ) {
     // amount is in centavos; always positive — sign is inferred from type
     return this.prisma.rider_wallet_transactions.create({
       data: {
@@ -38,7 +43,9 @@ export class LedgerService {
   }
 
   async getWalletBalance(riderId: string) {
-    const profile = await this.prisma.profiles.findUnique({ where: { id: riderId } });
+    const profile = await this.prisma.profiles.findUnique({
+      where: { id: riderId },
+    });
     if (!profile) throw new BadRequestException('Profile not found');
 
     const netCash = await this.getNetCash(riderId);

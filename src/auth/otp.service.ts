@@ -45,10 +45,10 @@ export class OtpService {
 
     // Generate 6-digit code
     const code = randomInt(100000, 999999).toString();
-    const codeHash = createHash('sha256').update(`${phone}:${code}`).digest('hex');
-    const expiresAt = new Date(
-      Date.now() + this.OTP_EXPIRY_MIN * 60 * 1000,
-    );
+    const codeHash = createHash('sha256')
+      .update(`${phone}:${code}`)
+      .digest('hex');
+    const expiresAt = new Date(Date.now() + this.OTP_EXPIRY_MIN * 60 * 1000);
 
     // Store in DB
     await this.prisma.otp_codes.create({
@@ -76,11 +76,10 @@ export class OtpService {
   /**
    * Verify a 6-digit OTP code against stored hash.
    */
-  async verifyOtp(
-    phone: string,
-    code: string,
-  ): Promise<{ verified: boolean }> {
-    const codeHash = createHash('sha256').update(`${phone}:${code}`).digest('hex');
+  async verifyOtp(phone: string, code: string): Promise<{ verified: boolean }> {
+    const codeHash = createHash('sha256')
+      .update(`${phone}:${code}`)
+      .digest('hex');
 
     // Find the latest unconsumed OTP for this phone
     const otpRecord = await this.prisma.otp_codes.findFirst({
@@ -133,10 +132,7 @@ export class OtpService {
   /**
    * Send SMS via Semaphore API.
    */
-  private async sendSemaphoreSms(
-    phone: string,
-    code: string,
-  ): Promise<void> {
+  private async sendSemaphoreSms(phone: string, code: string): Promise<void> {
     const apiKey = process.env.SEMAPHORE_API_KEY;
     const senderName = process.env.SEMAPHORE_SENDER_NAME || 'CARTMAN';
 

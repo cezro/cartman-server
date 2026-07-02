@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Put, Patch, Body, Param, UseGuards, ParseEnumPipe } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Patch,
+  Body,
+  Param,
+  UseGuards,
+  ParseEnumPipe,
+} from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -57,7 +67,11 @@ export class OrdersController {
 
   @Patch(':id/status')
   @Roles('rider')
-  advanceRiderStatus(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string, @Body('status') status: order_status) {
+  advanceRiderStatus(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body('status') status: order_status,
+  ) {
     return this.ordersService.advanceRiderStatus(id, user.id, status);
   }
 }

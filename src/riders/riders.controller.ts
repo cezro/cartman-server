@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Patch, Body, Param, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Body,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import { RidersService } from './riders.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -24,13 +32,19 @@ export class RidersController {
 
   @Patch('me/duty')
   @Roles('rider')
-  toggleDuty(@CurrentUser() user: AuthenticatedUser, @Body('is_active') isActive: boolean) {
+  toggleDuty(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body('is_active') isActive: boolean,
+  ) {
     return this.ridersService.toggleDuty(user.id, isActive);
   }
 
   @Post('me/telemetry')
   @Roles('rider')
-  logTelemetry(@CurrentUser() user: AuthenticatedUser, @Body('locations') locations: any[]) {
+  logTelemetry(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body('locations') locations: any[],
+  ) {
     return this.ridersService.logTelemetry(user.id, locations);
   }
 

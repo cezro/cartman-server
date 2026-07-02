@@ -30,8 +30,8 @@ export class RidersService {
 
   async logTelemetry(riderId: string, locations: any[]) {
     if (!locations || locations.length === 0) return { count: 0 };
-    
-    const data = locations.map(loc => ({
+
+    const data = locations.map((loc) => ({
       rider_id: riderId,
       lat: loc.lat,
       lng: loc.lng,

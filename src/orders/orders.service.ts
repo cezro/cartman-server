@@ -1,4 +1,8 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { order_type, order_status } from '@prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
@@ -9,18 +13,25 @@ const WALLET_LOCK_FLOOR = -200_000n; // -₱2,000 in centavos
 export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly ledgerService: LedgerService
+    private readonly ledgerService: LedgerService,
   ) {}
 
   // Haversine straight-line distance in km
-  private getDistanceInKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  private getDistanceInKm(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ) {
     const R = 6371;
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
     const a =
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
@@ -31,19 +42,27 @@ export class OrdersService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      const merchant = await tx.merchants.findUnique({ where: { id: merchant_id } });
+      const merchant = await tx.merchants.findUnique({
+        where: { id: merchant_id },
+      });
       if (!merchant) throw new BadRequestException('Merchant not found');
 
       let subtotal = 0n;
       const orderItemsData = [];
 
       for (const item of items) {
-        const menuItem = await tx.menu_items.findUnique({ where: { id: item.menu_item_id } });
+        const menuItem = await tx.menu_items.findUnique({
+          where: { id: item.menu_item_id },
+        });
         if (!menuItem || menuItem.merchant_id !== merchant_id) {
-          throw new BadRequestException(`Invalid menu item ${item.menu_item_id}`);
+          throw new BadRequestException(
+            `Invalid menu item ${item.menu_item_id}`,
+          );
         }
         if (!menuItem.in_stock) {
-          throw new BadRequestException(`Item ${menuItem.name} is out of stock`);
+          throw new BadRequestException(
+            `Item ${menuItem.name} is out of stock`,
+          );
         }
 
         subtotal += BigInt(menuItem.price) * BigInt(item.qty);
@@ -101,13 +120,30 @@ export class OrdersService {
   }
 
   async placeCourierOrder(customerId: string, data: any) {
-    const { pickup_lat, pickup_lng, pickup_text, dropoff_lat, dropoff_lng, dropoff_text, notes, recipient_name, recipient_phone } = data;
+    const {
+      pickup_lat,
+      pickup_lng,
+      pickup_text,
+      dropoff_lat,
+      dropoff_lng,
+      dropoff_text,
+      notes,
+      recipient_name,
+      recipient_phone,
+    } = data;
 
     if (!pickup_lat || !pickup_lng || !dropoff_lat || !dropoff_lng) {
-      throw new BadRequestException('Pickup and dropoff coordinates are required');
+      throw new BadRequestException(
+        'Pickup and dropoff coordinates are required',
+      );
     }
 
-    const distanceKm = this.getDistanceInKm(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng);
+    const distanceKm = this.getDistanceInKm(
+      pickup_lat,
+      pickup_lng,
+      dropoff_lat,
+      dropoff_lng,
+    );
 
     // Fare: ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢)
     const BASE = 4000n;
@@ -122,13 +158,18 @@ export class OrdersService {
         customer_id: customerId,
         type: order_type.pickup_delivery,
         status: order_status.pending,
-        pickup_lat, pickup_lng, pickup_text,
-        dropoff_lat, dropoff_lng, dropoff_text,
+        pickup_lat,
+        pickup_lng,
+        pickup_text,
+        dropoff_lat,
+        dropoff_lng,
+        dropoff_text,
         delivery_fee,
         delivery_payout,
         total: delivery_fee,
         notes,
-        recipient_name, recipient_phone,
+        recipient_name,
+        recipient_phone,
       },
     });
   }
@@ -152,14 +193,18 @@ export class OrdersService {
   }
 
   async claimOrder(orderId: string, riderId: string) {
-    const rider = await this.prisma.riders.findUnique({ where: { id: riderId } });
+    const rider = await this.prisma.riders.findUnique({
+      where: { id: riderId },
+    });
     if (!rider?.is_active) {
       throw new BadRequestException('Go on-duty before claiming orders');
     }
 
     const netCash = await this.ledgerService.getNetCash(riderId);
     if (netCash <= WALLET_LOCK_FLOOR) {
-      throw new BadRequestException('Wallet locked — remit cash before accepting orders');
+      throw new BadRequestException(
+        'Wallet locked — remit cash before accepting orders',
+      );
     }
 
     const result = await this.prisma.orders.updateMany({
@@ -175,13 +220,19 @@ export class OrdersService {
     });
 
     if (result.count === 0) {
-      throw new BadRequestException('Order is no longer available or already claimed');
+      throw new BadRequestException(
+        'Order is no longer available or already claimed',
+      );
     }
 
     return this.prisma.orders.findUnique({ where: { id: orderId } });
   }
 
-  async advanceRiderStatus(orderId: string, riderId: string, newStatus: order_status) {
+  async advanceRiderStatus(
+    orderId: string,
+    riderId: string,
+    newStatus: order_status,
+  ) {
     const order = await this.prisma.orders.update({
       where: {
         id: orderId,
@@ -198,7 +249,7 @@ export class OrdersService {
         riderId,
         'credit_delivery_reward',
         Number(order.delivery_payout),
-        order.id
+        order.id,
       );
 
       // Debit COD liability — amount is positive; sign comes from txn type
@@ -207,7 +258,7 @@ export class OrdersService {
           riderId,
           'debit_cod_order',
           Number(order.total),
-          order.id
+          order.id,
         );
       }
     }

@@ -20,7 +20,16 @@ export class ProfilesService {
     });
   }
 
-  async createAddress(userId: string, data: { label: string; text_address: string; lat: number; lng: number; is_default?: boolean }) {
+  async createAddress(
+    userId: string,
+    data: {
+      label: string;
+      text_address: string;
+      lat: number;
+      lng: number;
+      is_default?: boolean;
+    },
+  ) {
     if (data.is_default) {
       await this.prisma.addresses.updateMany({
         where: { user_id: userId },
@@ -35,7 +44,17 @@ export class ProfilesService {
     });
   }
 
-  async updateAddress(userId: string, addressId: string, data: { label?: string; text_address?: string; lat?: number; lng?: number; is_default?: boolean }) {
+  async updateAddress(
+    userId: string,
+    addressId: string,
+    data: {
+      label?: string;
+      text_address?: string;
+      lat?: number;
+      lng?: number;
+      is_default?: boolean;
+    },
+  ) {
     if (data.is_default) {
       await this.prisma.addresses.updateMany({
         where: { user_id: userId },

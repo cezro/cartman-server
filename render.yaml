@@ -1,0 +1,40 @@
+services:
+  - name: cartman-server
+    type: web
+    runtime: node
+    region: singapore # closest Render region to the Supabase ap-northeast-1 project
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    # Applies pending Prisma migrations before traffic is switched to the new deploy.
+    preDeployCommand: npx prisma migrate deploy
+    envVars:
+      - key: NODE_VERSION
+        value: 24.13.0
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+
+      # Supabase Postgres — transaction-mode pooler (app runtime queries)
+      - key: DATABASE_URL
+        sync: false
+      # Supabase Postgres — session-mode pooler (used by `prisma migrate deploy`)
+      - key: DIRECT_URL
+        sync: false
+
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_WEBHOOK_SECRET
+        sync: false
+
+      - key: SEMAPHORE_API_KEY
+        sync: false
+      - key: SEMAPHORE_SENDER_NAME
+        value: CARTMAN
