@@ -326,6 +326,8 @@ export class OrdersService {
       take: 20,
       include: {
         merchant: { select: { name: true, image_url: true } },
+        order_items: true,
+        order_stops: true,
       },
     });
     return orders.map((order) => this.serializeOrder(order));

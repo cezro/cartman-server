@@ -362,6 +362,30 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('2.3 — customer order history', () => {
+    it('includes order_items so the client can render line items without extra requests', async () => {
+      prisma.orders.findMany.mockResolvedValue([
+        {
+          id: 'order-1',
+          status: order_status.pending,
+          order_items: [{ id: 1, name: 'Burger', qty: 2, unit_price: 15000n }],
+        },
+      ]);
+
+      const result = await service.getHistory('cust-1');
+
+      expect(prisma.orders.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { customer_id: 'cust-1' },
+          include: expect.objectContaining({
+            order_items: true,
+          }) as Record<string, unknown>,
+        }),
+      );
+      expect(result[0].order_items[0].unit_price).toBe(15000);
+    });
+  });
+
   describe('2.5 — customer cancel', () => {
     it('succeeds while the order is unassigned and pending/ready_for_pickup', async () => {
       prisma.orders.updateMany.mockResolvedValue({ count: 1 });
