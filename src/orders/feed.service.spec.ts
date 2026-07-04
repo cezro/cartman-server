@@ -53,6 +53,26 @@ describe('FeedService', () => {
     jest.useRealTimers();
   });
 
+  it('honors an explicit FEED_W_*=0 instead of falling back to the default', async () => {
+    process.env.FEED_W_AGE = '0';
+    try {
+      const zeroAgeService = new FeedService(
+        prisma as unknown as PrismaService,
+        ledgerService as unknown as LedgerService,
+      );
+      // With the age weight zeroed, an older otherwise-identical order gains
+      // nothing — the tie-break (older first) decides order, but scores match.
+      prisma.orders.findMany.mockResolvedValue([
+        baseOrder({ id: 'older', created_at: minutesAgo(20) }),
+        baseOrder({ id: 'newer', created_at: minutesAgo(1) }),
+      ]);
+      const result = await zeroAgeService.rankedFeed('rider-1');
+      expect(result[0].score).toBe(result[1].score);
+    } finally {
+      delete process.env.FEED_W_AGE;
+    }
+  });
+
   it('1. an older order outranks an identical newer order (age term)', async () => {
     prisma.orders.findMany.mockResolvedValue([
       baseOrder({ id: 'older', created_at: minutesAgo(20) }),

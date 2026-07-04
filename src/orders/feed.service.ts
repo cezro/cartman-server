@@ -40,6 +40,13 @@ function round4(n: number): number {
   return Math.round(n * 10_000) / 10_000;
 }
 
+// An explicit `FEED_W_*=0` is a valid operator choice (disable that term) —
+// only unset/unparsable values fall back to the default, so no `||`.
+function envWeight(name: string, fallback: number): number {
+  const parsed = parseFloat(process.env[name] ?? '');
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
 @Injectable()
 export class FeedService {
   private readonly wAge: number;
@@ -54,10 +61,10 @@ export class FeedService {
     // future scoring wants to weight by rider standing.
     private readonly ledgerService: LedgerService,
   ) {
-    this.wAge = parseFloat(process.env.FEED_W_AGE ?? '') || 0.4;
-    this.wProx = parseFloat(process.env.FEED_W_PROX ?? '') || 0.3;
-    this.wPayout = parseFloat(process.env.FEED_W_PAYOUT ?? '') || 0.2;
-    this.wType = parseFloat(process.env.FEED_W_TYPE ?? '') || 0.1;
+    this.wAge = envWeight('FEED_W_AGE', 0.4);
+    this.wProx = envWeight('FEED_W_PROX', 0.3);
+    this.wPayout = envWeight('FEED_W_PAYOUT', 0.2);
+    this.wType = envWeight('FEED_W_TYPE', 0.1);
   }
 
   async rankedFeed(
