@@ -405,9 +405,12 @@ export class OrdersService {
       });
 
       if (newStatus === order_status.delivered) {
-        // Idempotency guard: if a reward row for this order already exists
-        // (e.g. a retried request), skip both ledger writes rather than
-        // crediting/debiting the rider twice.
+        // Idempotency guard — load-bearing, do not remove as "dead code":
+        // the transition guard above reads the order OUTSIDE this transaction,
+        // so two concurrent in_transit→delivered requests can BOTH pass it
+        // with the same stale read. Postgres's row lock serializes the two
+        // tx.orders.update calls, and THIS check is what stops the second
+        // transaction from crediting/debiting the rider twice.
         const alreadyRewarded = await tx.rider_wallet_transactions.findFirst({
           where: {
             order_id: order.id,
