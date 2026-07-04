@@ -9,6 +9,27 @@ import { LedgerService } from '../ledger/ledger.service';
 
 const WALLET_LOCK_FLOOR = -200_000n; // -₱2,000 in centavos
 
+// Legal rider-driven forward transitions. advanceRiderStatus rejects any
+// target that isn't exactly NEXT[order.status] for the order's current status.
+const NEXT: Partial<Record<order_status, order_status>> = {
+  accepted: order_status.arrived_at_merchant,
+  arrived_at_merchant: order_status.picked_up,
+  picked_up: order_status.in_transit,
+  in_transit: order_status.delivered,
+};
+
+async function nextRefNo(tx: {
+  $queryRaw: <T = unknown>(
+    query: TemplateStringsArray,
+    ...values: unknown[]
+  ) => Promise<T>;
+}): Promise<string> {
+  const [{ nextval }] = await tx.$queryRaw<
+    { nextval: bigint }[]
+  >`select nextval('order_ref_seq')`;
+  return `CMN-${nextval.toString().padStart(6, '0')}`;
+}
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -116,6 +137,7 @@ export class OrdersService {
       const delivery_fee = merchant.delivery_fee;
       const delivery_payout = delivery_fee; // rider gets full delivery fee (v1)
       const total = subtotal + delivery_fee;
+      const ref_no = await nextRefNo(tx);
 
       const order = await tx.orders.create({
         data: {
@@ -124,6 +146,7 @@ export class OrdersService {
           merchant_name: merchant.name,
           type,
           status: order_status.pending,
+          ref_no,
           subtotal,
           delivery_fee,
           delivery_payout,
@@ -143,19 +166,28 @@ export class OrdersService {
     const delivery_fee = 10000n; // ₱100 — errand base fee
     const delivery_payout = delivery_fee;
 
-    const order = await this.prisma.orders.create({
-      data: {
-        customer_id: customerId,
-        type: order_type.errand,
-        status: order_status.pending,
-        delivery_fee,
-        delivery_payout,
-        total: delivery_fee,
-        errand_payload,
-        notes,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const ref_no = await nextRefNo(tx);
+      const order = await tx.orders.create({
+        data: {
+          customer_id: customerId,
+          type: order_type.errand,
+          // Errand/courier/ride have no merchant prep step, so there is no
+          // "pending -> preparing -> ready" advance to wait on; they are
+          // claimable by riders the instant they're placed. There is also
+          // no merchant panel to move them out of `pending`, so leaving
+          // them there would make them unclaimable forever.
+          status: order_status.ready_for_pickup,
+          ref_no,
+          delivery_fee,
+          delivery_payout,
+          total: delivery_fee,
+          errand_payload,
+          notes,
+        },
+      });
+      return this.serializeOrder(order);
     });
-    return this.serializeOrder(order);
   }
 
   async placeCourierOrder(customerId: string, data: any) {
@@ -186,26 +218,32 @@ export class OrdersService {
     );
     const delivery_payout = delivery_fee;
 
-    const order = await this.prisma.orders.create({
-      data: {
-        customer_id: customerId,
-        type: order_type.pickup_delivery,
-        status: order_status.pending,
-        pickup_lat,
-        pickup_lng,
-        pickup_text,
-        dropoff_lat,
-        dropoff_lng,
-        dropoff_text,
-        delivery_fee,
-        delivery_payout,
-        total: delivery_fee,
-        notes,
-        recipient_name,
-        recipient_phone,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const ref_no = await nextRefNo(tx);
+      const order = await tx.orders.create({
+        data: {
+          customer_id: customerId,
+          type: order_type.pickup_delivery,
+          // No merchant prep step for courier orders — born ready_for_pickup
+          // so riders can claim immediately (see placeErrandOrder comment).
+          status: order_status.ready_for_pickup,
+          ref_no,
+          pickup_lat,
+          pickup_lng,
+          pickup_text,
+          dropoff_lat,
+          dropoff_lng,
+          dropoff_text,
+          delivery_fee,
+          delivery_payout,
+          total: delivery_fee,
+          notes,
+          recipient_name,
+          recipient_phone,
+        },
+      });
+      return this.serializeOrder(order);
     });
-    return this.serializeOrder(order);
   }
 
   async placeRideOrder(customerId: string, data: any) {
@@ -236,24 +274,30 @@ export class OrdersService {
     );
     const delivery_payout = delivery_fee;
 
-    const order = await this.prisma.orders.create({
-      data: {
-        customer_id: customerId,
-        type: order_type.ride,
-        status: order_status.pending,
-        pickup_lat,
-        pickup_lng,
-        pickup_text,
-        dropoff_lat,
-        dropoff_lng,
-        dropoff_text,
-        delivery_fee,
-        delivery_payout,
-        total: delivery_fee,
-        notes,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const ref_no = await nextRefNo(tx);
+      const order = await tx.orders.create({
+        data: {
+          customer_id: customerId,
+          type: order_type.ride,
+          // No merchant prep step for ride orders — born ready_for_pickup
+          // so riders can claim immediately (see placeErrandOrder comment).
+          status: order_status.ready_for_pickup,
+          ref_no,
+          pickup_lat,
+          pickup_lng,
+          pickup_text,
+          dropoff_lat,
+          dropoff_lng,
+          dropoff_text,
+          delivery_fee,
+          delivery_payout,
+          total: delivery_fee,
+          notes,
+        },
+      });
+      return this.serializeOrder(order);
     });
-    return this.serializeOrder(order);
   }
 
   private calcHaversineFare(
@@ -339,36 +383,90 @@ export class OrdersService {
     riderId: string,
     newStatus: order_status,
   ) {
-    const order = await this.prisma.orders.update({
-      where: {
-        id: orderId,
-        assigned_rider_id: riderId,
-      },
-      data: {
-        status: newStatus,
-      },
+    const existing = await this.prisma.orders.findUnique({
+      where: { id: orderId },
     });
-
-    if (newStatus === order_status.delivered) {
-      // Credit rider's delivery share (delivery_payout, not the full delivery_fee)
-      await this.ledgerService.createManualTransaction(
-        riderId,
-        'credit_delivery_reward',
-        Number(order.delivery_payout),
-        order.id,
-      );
-
-      // Debit COD liability — amount is positive; sign comes from txn type
-      if (order.payment === 'cod') {
-        await this.ledgerService.createManualTransaction(
-          riderId,
-          'debit_cod_order',
-          Number(order.total),
-          order.id,
-        );
-      }
+    if (!existing || existing.assigned_rider_id !== riderId) {
+      throw new NotFoundException('Order not found');
+    }
+    if (newStatus !== NEXT[existing.status]) {
+      throw new BadRequestException('Illegal status transition');
     }
 
+    const order = await this.prisma.$transaction(async (tx) => {
+      const order = await tx.orders.update({
+        where: {
+          id: orderId,
+          assigned_rider_id: riderId,
+        },
+        data: {
+          status: newStatus,
+        },
+      });
+
+      if (newStatus === order_status.delivered) {
+        // Idempotency guard: if a reward row for this order already exists
+        // (e.g. a retried request), skip both ledger writes rather than
+        // crediting/debiting the rider twice.
+        const alreadyRewarded = await tx.rider_wallet_transactions.findFirst({
+          where: {
+            order_id: order.id,
+            type: 'credit_delivery_reward',
+          },
+        });
+
+        if (!alreadyRewarded) {
+          // Credit rider's delivery share (delivery_payout, not the full
+          // delivery_fee). Inlined here (rather than via LedgerService)
+          // because it must run inside this same transaction — amount is
+          // always positive, sign is inferred from `type` (append-only ledger).
+          await tx.rider_wallet_transactions.create({
+            data: {
+              rider_id: riderId,
+              type: 'credit_delivery_reward',
+              amount: BigInt(order.delivery_payout),
+              order_id: order.id,
+            },
+          });
+
+          // Debit COD liability — amount is positive; sign comes from txn type
+          if (order.payment === 'cod') {
+            await tx.rider_wallet_transactions.create({
+              data: {
+                rider_id: riderId,
+                type: 'debit_cod_order',
+                amount: BigInt(order.total),
+                order_id: order.id,
+              },
+            });
+          }
+        }
+      }
+
+      return order;
+    });
+
     return this.serializeOrder(order);
+  }
+
+  async cancelOrder(orderId: string, customerId: string) {
+    const result = await this.prisma.orders.updateMany({
+      where: {
+        id: orderId,
+        customer_id: customerId,
+        assigned_rider_id: null,
+        status: { in: [order_status.pending, order_status.ready_for_pickup] },
+      },
+      data: { status: order_status.canceled },
+    });
+
+    if (result.count === 0) {
+      throw new BadRequestException('Order can no longer be cancelled');
+    }
+
+    const order = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    return this.serializeOrder(order!);
   }
 }

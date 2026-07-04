@@ -57,6 +57,12 @@ export class OrdersController {
     return this.ordersService.getHistory(user.id);
   }
 
+  @Patch(':id/cancel')
+  @Roles('customer')
+  cancelOrder(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.ordersService.cancelOrder(id, user.id);
+  }
+
   // Merchant operations
   @Patch(':id/accept')
   @Roles('merchant', 'admin')
