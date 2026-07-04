@@ -6,8 +6,21 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { order_type, order_status } from '@prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
+import { haversineKm } from './geo';
+import { serializeOrder } from './serialize-order';
 
-const WALLET_LOCK_FLOOR = -200_000n; // -₱2,000 in centavos
+// -₱2,000 in centavos — mirrors LedgerService's LOCK_FLOOR / accept_order() RPC.
+export const WALLET_LOCK_FLOOR = -200_000n;
+
+// Statuses that count toward a rider's active order load for the
+// queue-depth guard on claimOrder (max 1 active + 1 queued).
+const ACTIVE_RIDER_STATUSES: order_status[] = [
+  order_status.accepted,
+  order_status.arrived_at_merchant,
+  order_status.picked_up,
+  order_status.in_transit,
+];
+const MAX_ACTIVE_ORDERS_PER_RIDER = 2;
 
 // Legal rider-driven forward transitions. advanceRiderStatus rejects any
 // target that isn't exactly NEXT[order.status] for the order's current status.
@@ -37,48 +50,10 @@ export class OrdersService {
     private readonly ledgerService: LedgerService,
   ) {}
 
-  // Haversine straight-line distance in km
-  private getDistanceInKm(
-    lat1: number,
-    lon1: number,
-    lat2: number,
-    lon2: number,
-  ) {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-
-  // Prisma returns bigint centavo columns as JS BigInt, which Nest's default
-  // JSON serializer cannot stringify. Centavo amounts are far under
-  // Number.MAX_SAFE_INTEGER, so converting at the response boundary is safe.
+  // Delegates to the shared helper (also used by FeedService) so both
+  // return the same wire shape for order rows.
   private serializeOrder<T extends Record<string, any>>(order: T): T {
-    const moneyFields = [
-      'subtotal',
-      'delivery_fee',
-      'discount',
-      'total',
-      'delivery_payout',
-    ] as const;
-    const out: Record<string, any> = { ...order };
-    for (const field of moneyFields) {
-      if (typeof out[field] === 'bigint') out[field] = Number(out[field]);
-    }
-    if (Array.isArray(out.order_items)) {
-      out.order_items = out.order_items.map((item: Record<string, any>) =>
-        typeof item.unit_price === 'bigint'
-          ? { ...item, unit_price: Number(item.unit_price) }
-          : item,
-      );
-    }
-    return out as T;
+    return serializeOrder(order);
   }
 
   async placeFoodOrder(customerId: string, data: any) {
@@ -306,7 +281,7 @@ export class OrdersService {
     dropoffLat: number,
     dropoffLng: number,
   ): bigint {
-    const distanceKm = this.getDistanceInKm(
+    const distanceKm = haversineKm(
       pickupLat,
       pickupLng,
       dropoffLat,
@@ -356,6 +331,16 @@ export class OrdersService {
       );
     }
 
+    const activeCount = await this.prisma.orders.count({
+      where: {
+        assigned_rider_id: riderId,
+        status: { in: ACTIVE_RIDER_STATUSES },
+      },
+    });
+    if (activeCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+      throw new BadRequestException('Finish your current orders first');
+    }
+
     const result = await this.prisma.orders.updateMany({
       where: {
         id: orderId,
@@ -377,7 +362,10 @@ export class OrdersService {
     const order = await this.prisma.orders.findUnique({
       where: { id: orderId },
     });
-    return this.serializeOrder(order!);
+    return {
+      ...this.serializeOrder(order!),
+      queued: activeCount > 0,
+    };
   }
 
   async advanceRiderStatus(

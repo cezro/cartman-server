@@ -15,6 +15,7 @@ describe('OrdersService', () => {
       updateMany: jest.Mock;
       findUnique: jest.Mock;
       findMany: jest.Mock;
+      count: jest.Mock;
     };
     riders: { findUnique: jest.Mock };
     rider_wallet_transactions: { findFirst: jest.Mock; create: jest.Mock };
@@ -41,6 +42,7 @@ describe('OrdersService', () => {
         updateMany: jest.fn(),
         findUnique: jest.fn(),
         findMany: jest.fn(),
+        count: jest.fn().mockResolvedValue(0),
       },
       riders: { findUnique: jest.fn() },
       rider_wallet_transactions: { findFirst: jest.fn(), create: jest.fn() },
@@ -191,6 +193,47 @@ describe('OrdersService', () => {
         }),
       );
       expect(result.status).toBe(order_status.accepted);
+    });
+  });
+
+  describe('3.4 — claim queue-depth guard (max 1 active + 1 queued)', () => {
+    beforeEach(() => {
+      prisma.riders.findUnique.mockResolvedValue({
+        id: 'rider-1',
+        is_active: true,
+      });
+      ledgerService.getNetCash.mockResolvedValue(0n);
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+      prisma.orders.findUnique.mockResolvedValue({
+        id: 'order-3',
+        status: order_status.accepted,
+        assigned_rider_id: 'rider-1',
+      });
+    });
+
+    it('rejects a third concurrent claim with "Finish your current orders first"', async () => {
+      prisma.orders.count.mockResolvedValue(2);
+
+      await expect(service.claimOrder('order-3', 'rider-1')).rejects.toThrow(
+        'Finish your current orders first',
+      );
+      expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('returns queued: false on the first claim (rider had 0 active orders)', async () => {
+      prisma.orders.count.mockResolvedValue(0);
+
+      const result = await service.claimOrder('order-1', 'rider-1');
+
+      expect(result.queued).toBe(false);
+    });
+
+    it('returns queued: true on the second claim (rider already had 1 active order)', async () => {
+      prisma.orders.count.mockResolvedValue(1);
+
+      const result = await service.claimOrder('order-2', 'rider-1');
+
+      expect(result.queued).toBe(true);
     });
   });
 
