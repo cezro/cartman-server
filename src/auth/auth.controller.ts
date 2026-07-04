@@ -33,20 +33,30 @@ export class AuthController {
    * Rate limited: max 3 per 15 min per phone.
    */
   @Post('send-otp')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Send OTP to phone number (C-1.2)' })
-  async sendOtp(@Body() dto: SendOtpDto) {
-    return this.otpService.sendOtp(dto.phone);
+  async sendOtp(
+    @Body() dto: SendOtpDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.otpService.sendOtp(dto.phone, user.id);
   }
 
   /**
    * Verify a 6-digit OTP code. Sets phone_verified = true on success.
    */
   @Post('verify-otp')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify OTP code (C-1.2)' })
-  async verifyOtp(@Body() dto: VerifyOtpDto) {
-    return this.otpService.verifyOtp(dto.phone, dto.code);
+  async verifyOtp(
+    @Body() dto: VerifyOtpDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.otpService.verifyOtp(dto.phone, dto.code, user.id);
   }
 
   /**

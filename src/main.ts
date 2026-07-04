@@ -1,9 +1,14 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+
+  // Global validation: whitelist strips unknown props, transform applies
+  // class-transformer decorators (e.g. phone normalization) before validation.
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
   // Swagger setup
   const config = new DocumentBuilder()

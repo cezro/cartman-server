@@ -210,4 +210,109 @@ describe('OtpService', () => {
       expect(result).toEqual({ verified: true });
     });
   });
+
+  describe('verifyOtp bound to authenticated user', () => {
+    it('sets phone_verified: true and stores the phone on the profile', async () => {
+      const code = '111222';
+      const codeHash = hashOtp('+639171234567', code);
+
+      prisma.otp_codes.findFirst.mockResolvedValue({
+        id: 'otp-3',
+        code_hash: codeHash,
+        attempts: 0,
+        user_id: 'user-1',
+      });
+
+      const result = await service.verifyOtp('+639171234567', code, 'user-1');
+
+      expect(result).toEqual({ verified: true });
+      expect(prisma.profiles.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'user-1' },
+          data: expect.objectContaining({
+            phone_verified: true,
+            phone: '+639171234567',
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('rejects when the stored user_id differs from the caller id', async () => {
+      const code = '333444';
+      const codeHash = hashOtp('+639171234567', code);
+
+      prisma.otp_codes.findFirst.mockResolvedValue({
+        id: 'otp-4',
+        code_hash: codeHash,
+        attempts: 0,
+        user_id: 'user-1',
+      });
+
+      await expect(
+        service.verifyOtp('+639171234567', code, 'user-2'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.verifyOtp('+639171234567', code, 'user-2'),
+      ).rejects.toThrow('OTP does not belong to this user');
+    });
+  });
+
+  describe('rate limiting and attempt/expiry behavior', () => {
+    it('rejects the 4th send within the 15 minute window with HttpException 429', async () => {
+      prisma.otp_codes.count.mockResolvedValue(3);
+
+      await expect(service.sendOtp('+639171234567')).rejects.toThrow(
+        HttpException,
+      );
+      await expect(service.sendOtp('+639171234567')).rejects.toMatchObject({
+        status: 429,
+      });
+    });
+
+    it('increments attempts and rejects on a wrong code', async () => {
+      prisma.otp_codes.findFirst.mockResolvedValue({
+        id: 'otp-5',
+        code_hash: 'not-a-match',
+        attempts: 0,
+        user_id: null,
+      });
+
+      await expect(
+        service.verifyOtp('+639171234567', '000000'),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.otp_codes.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'otp-5' },
+          data: { attempts: { increment: 1 } },
+        }),
+      );
+    });
+
+    it('rejects an expired code (no matching non-expired record found)', async () => {
+      prisma.otp_codes.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.verifyOtp('+639171234567', '654321'),
+      ).rejects.toThrow(BadRequestException);
+      await expect(
+        service.verifyOtp('+639171234567', '654321'),
+      ).rejects.toThrow('No valid OTP found. Request a new one.');
+    });
+  });
+
+  describe('sendSemaphoreSms failure surfacing', () => {
+    it('throws HttpException 502 when Semaphore responds non-ok and the API key is set', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        text: () => Promise.resolve('Semaphore error body'),
+      });
+
+      await expect(service.sendOtp('+639171234567')).rejects.toThrow(
+        HttpException,
+      );
+      await expect(service.sendOtp('+639171234567')).rejects.toMatchObject({
+        status: 502,
+      });
+    });
+  });
 });

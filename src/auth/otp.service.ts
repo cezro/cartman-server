@@ -60,8 +60,12 @@ export class OtpService {
   /**
    * Verify a 6-digit OTP code against stored hash for a phone number.
    */
-  async verifyOtp(phone: string, code: string): Promise<{ verified: boolean }> {
-    return this.verify(phone, 'sms', code);
+  async verifyOtp(
+    phone: string,
+    code: string,
+    userId?: string,
+  ): Promise<{ verified: boolean }> {
+    return this.verify(phone, 'sms', code, userId);
   }
 
   /**
@@ -128,6 +132,7 @@ export class OtpService {
     identifier: string,
     channel: OtpChannel,
     code: string,
+    callerUserId?: string,
   ): Promise<{ verified: boolean }> {
     const identifierField = channel === 'sms' ? 'phone' : 'email';
     const codeHash = createHash('sha256')
@@ -146,6 +151,14 @@ export class OtpService {
 
     if (!otpRecord) {
       throw new BadRequestException('No valid OTP found. Request a new one.');
+    }
+
+    if (
+      callerUserId &&
+      otpRecord.user_id &&
+      otpRecord.user_id !== callerUserId
+    ) {
+      throw new BadRequestException('OTP does not belong to this user');
     }
 
     if (otpRecord.attempts >= this.MAX_ATTEMPTS) {
@@ -168,11 +181,12 @@ export class OtpService {
       data: { consumed: true },
     });
 
-    if (otpRecord.user_id) {
+    const targetUserId = callerUserId ?? otpRecord.user_id;
+    if (targetUserId) {
       const profileUpdate: Record<string, unknown> = { phone_verified: true };
       profileUpdate[identifierField] = identifier;
       await this.prisma.profiles.update({
-        where: { id: otpRecord.user_id },
+        where: { id: targetUserId },
         data: profileUpdate,
       });
     }
@@ -207,6 +221,10 @@ export class OtpService {
 
     if (!response.ok) {
       console.error('Semaphore SMS failed:', await response.text());
+      throw new HttpException(
+        'SMS send failed — try again',
+        HttpStatus.BAD_GATEWAY,
+      );
     }
   }
 
