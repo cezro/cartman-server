@@ -9,7 +9,12 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { OtpService } from './otp.service';
-import { SendOtpDto, VerifyOtpDto } from './dto/otp.dto';
+import {
+  SendOtpDto,
+  VerifyOtpDto,
+  SendEmailOtpDto,
+  VerifyEmailOtpDto,
+} from './dto/otp.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from './jwt.strategy';
@@ -42,6 +47,27 @@ export class AuthController {
   @ApiOperation({ summary: 'Verify OTP code (C-1.2)' })
   async verifyOtp(@Body() dto: VerifyOtpDto) {
     return this.otpService.verifyOtp(dto.phone, dto.code);
+  }
+
+  /**
+   * Send a 6-digit OTP to an email address.
+   * Rate limited: max 3 per 15 min per email.
+   */
+  @Post('send-email-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send OTP to email address (C-1.2)' })
+  async sendEmailOtp(@Body() dto: SendEmailOtpDto) {
+    return this.otpService.sendEmailOtp(dto.email);
+  }
+
+  /**
+   * Verify a 6-digit email OTP code.
+   */
+  @Post('verify-email-otp')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify email OTP code (C-1.2)' })
+  async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto) {
+    return this.otpService.verifyEmailOtp(dto.email, dto.code);
   }
 
   /**

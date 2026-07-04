@@ -27,6 +27,12 @@ export class OrdersController {
     return this.ordersService.placeFoodOrder(user.id, data);
   }
 
+  @Post('grocery')
+  @Roles('customer')
+  placeGroceryOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+    return this.ordersService.placeGroceryOrder(user.id, data);
+  }
+
   @Post('errand')
   @Roles('customer')
   placeErrandOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
@@ -37,6 +43,12 @@ export class OrdersController {
   @Roles('customer')
   placeCourierOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
     return this.ordersService.placeCourierOrder(user.id, data);
+  }
+
+  @Post('ride')
+  @Roles('customer')
+  placeRideOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+    return this.ordersService.placeRideOrder(user.id, data);
   }
 
   @Get('history')

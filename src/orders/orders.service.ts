@@ -35,7 +35,44 @@ export class OrdersService {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
+  // Prisma returns bigint centavo columns as JS BigInt, which Nest's default
+  // JSON serializer cannot stringify. Centavo amounts are far under
+  // Number.MAX_SAFE_INTEGER, so converting at the response boundary is safe.
+  private serializeOrder<T extends Record<string, any>>(order: T): T {
+    const moneyFields = [
+      'subtotal',
+      'delivery_fee',
+      'discount',
+      'total',
+      'delivery_payout',
+    ] as const;
+    const out: Record<string, any> = { ...order };
+    for (const field of moneyFields) {
+      if (typeof out[field] === 'bigint') out[field] = Number(out[field]);
+    }
+    if (Array.isArray(out.order_items)) {
+      out.order_items = out.order_items.map((item: Record<string, any>) =>
+        typeof item.unit_price === 'bigint'
+          ? { ...item, unit_price: Number(item.unit_price) }
+          : item,
+      );
+    }
+    return out as T;
+  }
+
   async placeFoodOrder(customerId: string, data: any) {
+    return this.placeMerchantOrder(customerId, data, order_type.food);
+  }
+
+  async placeGroceryOrder(customerId: string, data: any) {
+    return this.placeMerchantOrder(customerId, data, order_type.grocery);
+  }
+
+  private async placeMerchantOrder(
+    customerId: string,
+    data: any,
+    type: typeof order_type.food | typeof order_type.grocery,
+  ) {
     const { merchant_id, items } = data;
     if (!items || items.length === 0) {
       throw new BadRequestException('Order must contain items');
@@ -80,12 +117,12 @@ export class OrdersService {
       const delivery_payout = delivery_fee; // rider gets full delivery fee (v1)
       const total = subtotal + delivery_fee;
 
-      return tx.orders.create({
+      const order = await tx.orders.create({
         data: {
           customer_id: customerId,
           merchant_id,
           merchant_name: merchant.name,
-          type: order_type.food,
+          type,
           status: order_status.pending,
           subtotal,
           delivery_fee,
@@ -97,6 +134,7 @@ export class OrdersService {
         },
         include: { order_items: true },
       });
+      return this.serializeOrder(order);
     });
   }
 
@@ -105,7 +143,7 @@ export class OrdersService {
     const delivery_fee = 10000n; // ₱100 — errand base fee
     const delivery_payout = delivery_fee;
 
-    return this.prisma.orders.create({
+    const order = await this.prisma.orders.create({
       data: {
         customer_id: customerId,
         type: order_type.errand,
@@ -117,6 +155,7 @@ export class OrdersService {
         notes,
       },
     });
+    return this.serializeOrder(order);
   }
 
   async placeCourierOrder(customerId: string, data: any) {
@@ -138,22 +177,16 @@ export class OrdersService {
       );
     }
 
-    const distanceKm = this.getDistanceInKm(
+    // Fare: ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢)
+    const delivery_fee = this.calcHaversineFare(
       pickup_lat,
       pickup_lng,
       dropoff_lat,
       dropoff_lng,
     );
-
-    // Fare: ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢)
-    const BASE = 4000n;
-    const PER_KM = 1200n;
-    const MIN_FEE = 5000n;
-    const raw = BASE + BigInt(Math.round(distanceKm)) * PER_KM;
-    const delivery_fee = raw < MIN_FEE ? MIN_FEE : raw;
     const delivery_payout = delivery_fee;
 
-    return this.prisma.orders.create({
+    const order = await this.prisma.orders.create({
       data: {
         customer_id: customerId,
         type: order_type.pickup_delivery,
@@ -172,10 +205,78 @@ export class OrdersService {
         recipient_phone,
       },
     });
+    return this.serializeOrder(order);
+  }
+
+  async placeRideOrder(customerId: string, data: any) {
+    const {
+      pickup_lat,
+      pickup_lng,
+      pickup_text,
+      dropoff_lat,
+      dropoff_lng,
+      dropoff_text,
+      notes,
+    } = data;
+
+    if (!pickup_lat || !pickup_lng || !dropoff_lat || !dropoff_lng) {
+      throw new BadRequestException(
+        'Pickup and dropoff coordinates are required',
+      );
+    }
+
+    // Reuses the same haversine fare curve as courier (TODO: confirm the
+    // intended Pasakay base/per-km rate against the backlog docs — the
+    // courier rate is used here as a placeholder, not a confirmed fare).
+    const delivery_fee = this.calcHaversineFare(
+      pickup_lat,
+      pickup_lng,
+      dropoff_lat,
+      dropoff_lng,
+    );
+    const delivery_payout = delivery_fee;
+
+    const order = await this.prisma.orders.create({
+      data: {
+        customer_id: customerId,
+        type: order_type.ride,
+        status: order_status.pending,
+        pickup_lat,
+        pickup_lng,
+        pickup_text,
+        dropoff_lat,
+        dropoff_lng,
+        dropoff_text,
+        delivery_fee,
+        delivery_payout,
+        total: delivery_fee,
+        notes,
+      },
+    });
+    return this.serializeOrder(order);
+  }
+
+  private calcHaversineFare(
+    pickupLat: number,
+    pickupLng: number,
+    dropoffLat: number,
+    dropoffLng: number,
+  ): bigint {
+    const distanceKm = this.getDistanceInKm(
+      pickupLat,
+      pickupLng,
+      dropoffLat,
+      dropoffLng,
+    );
+    const BASE = 4000n;
+    const PER_KM = 1200n;
+    const MIN_FEE = 5000n;
+    const raw = BASE + BigInt(Math.round(distanceKm)) * PER_KM;
+    return raw < MIN_FEE ? MIN_FEE : raw;
   }
 
   async getHistory(customerId: string) {
-    return this.prisma.orders.findMany({
+    const orders = await this.prisma.orders.findMany({
       where: { customer_id: customerId },
       orderBy: { created_at: 'desc' },
       take: 20,
@@ -183,13 +284,15 @@ export class OrdersService {
         merchant: { select: { name: true, image_url: true } },
       },
     });
+    return orders.map((order) => this.serializeOrder(order));
   }
 
   async updateStatus(orderId: string, status: order_status) {
-    return this.prisma.orders.update({
+    const order = await this.prisma.orders.update({
       where: { id: orderId },
       data: { status },
     });
+    return this.serializeOrder(order);
   }
 
   async claimOrder(orderId: string, riderId: string) {
@@ -225,7 +328,10 @@ export class OrdersService {
       );
     }
 
-    return this.prisma.orders.findUnique({ where: { id: orderId } });
+    const order = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    return this.serializeOrder(order!);
   }
 
   async advanceRiderStatus(
@@ -263,6 +369,6 @@ export class OrdersService {
       }
     }
 
-    return order;
+    return this.serializeOrder(order);
   }
 }

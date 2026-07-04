@@ -289,11 +289,13 @@ model device_tokens {
   @@index([user_id])
 }
 
-// ── otp_codes — transactional SMS OTP (C-1.2) ───────────────────────────
+// ── otp_codes — transactional SMS + email OTP (C-1.2) ───────────────────
 
 model otp_codes {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phone      String
+  phone      String?
+  email      String?
+  channel    String   @default("sms")
   code_hash  String
   user_id    String?  @db.Uuid
   expires_at DateTime @db.Timestamptz()
@@ -305,4 +307,5 @@ model otp_codes {
   profile profiles? @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([phone, created_at(sort: Desc)])
+  @@index([email, created_at(sort: Desc)])
 }
