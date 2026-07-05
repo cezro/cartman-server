@@ -328,6 +328,65 @@ describe('OrdersService', () => {
         );
       });
 
+      it('COD delivery writes exactly a credit_delivery_reward for the payout and a debit_cod_order for the total (E)', async () => {
+        // delivery_payout (rider's cut) deliberately differs from total (full
+        // order value the rider collected in cash) so the assertions below
+        // can't pass by amounts coincidentally matching.
+        prisma.orders.findUnique.mockResolvedValue({
+          id: 'order-2',
+          status: order_status.in_transit,
+          assigned_rider_id: 'rider-1',
+          delivery_payout: 4900n,
+          total: 15000n,
+          payment: 'cod',
+        });
+        prisma.rider_wallet_transactions.findFirst.mockResolvedValue(null);
+        prisma.orders.update.mockResolvedValue({
+          id: 'order-2',
+          status: order_status.delivered,
+          assigned_rider_id: 'rider-1',
+          delivery_payout: 4900n,
+          total: 15000n,
+          payment: 'cod',
+        });
+        prisma.rider_wallet_transactions.create.mockResolvedValue({});
+
+        await service.advanceRiderStatus(
+          'order-2',
+          'rider-1',
+          order_status.delivered,
+        );
+
+        expect(prisma.rider_wallet_transactions.create).toHaveBeenCalledTimes(
+          2,
+        );
+        expect(prisma.rider_wallet_transactions.create).toHaveBeenCalledWith({
+          data: {
+            rider_id: 'rider-1',
+            type: 'credit_delivery_reward',
+            amount: 4900n,
+            order_id: 'order-2',
+          },
+        });
+        expect(prisma.rider_wallet_transactions.create).toHaveBeenCalledWith({
+          data: {
+            rider_id: 'rider-1',
+            type: 'debit_cod_order',
+            amount: 15000n,
+            order_id: 'order-2',
+          },
+        });
+
+        // Every write is positive-amount, append-only — sign comes from
+        // `type`, never from a negative amount (global money constraint).
+        expect(
+          prisma.rider_wallet_transactions.create.mock.calls.every(
+            (c: unknown[]) =>
+              (c[0] as { data: { amount: bigint } }).data.amount > 0n,
+          ),
+        ).toBe(true);
+      });
+
       it('does not double-write ledger rows on a second delivered call for the same order', async () => {
         prisma.orders.findUnique.mockResolvedValue({
           id: 'order-1',

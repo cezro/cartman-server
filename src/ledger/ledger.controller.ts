@@ -53,4 +53,11 @@ export class LedgerController {
       })),
     );
   }
+
+  @Get('me/earnings-today')
+  @Roles('rider')
+  async getEarningsToday(@CurrentUser() user: AuthenticatedUser) {
+    const earnings_today = await this.ledgerService.getEarningsToday(user.id);
+    return { earnings_today };
+  }
 }
