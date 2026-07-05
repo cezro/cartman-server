@@ -94,6 +94,23 @@ export class AuthController {
         rider: true,
       },
     });
-    return profile;
+    return profile ? serializeProfile(profile) : profile;
   }
+}
+
+// Prisma returns bigint columns (`cart_points`, `wallet_centavos`) as JS
+// BigInt, which Nest's default JSON serializer cannot stringify — this is
+// what caused /auth/me to 500 on every live call. Centavo/points values are
+// far under Number.MAX_SAFE_INTEGER, so converting to Number at the response
+// boundary is safe. Mirrors the serializeOrder() precedent in
+// src/orders/serialize-order.ts (Number, not String, for consistency).
+// The nested `rider` relation has no BigInt columns (rating/acceptance_rate
+// are Prisma Decimal, which JSON.stringify handles fine) — see
+// prisma/schema.prisma's `riders` model — so it needs no conversion here.
+function serializeProfile<T extends Record<string, any>>(profile: T): T {
+  const out: Record<string, any> = { ...profile };
+  for (const field of ['cart_points', 'wallet_centavos'] as const) {
+    if (typeof out[field] === 'bigint') out[field] = Number(out[field]);
+  }
+  return out as T;
 }
