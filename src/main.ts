@@ -1,4 +1,5 @@
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger, ValidationPipe } from '@nestjs/common';
@@ -10,9 +11,16 @@ async function bootstrap() {
   // connection) even starts booting.
   validateEnv();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const logger = new Logger('Bootstrap');
   const isProduction = process.env.NODE_ENV === 'production';
+
+  // Render (and most PaaS hosts) sit the app behind a single reverse proxy
+  // hop. Without this, Express ignores X-Forwarded-For and every request
+  // appears to originate from the load balancer's IP — which means the
+  // global ThrottlerGuard buckets ALL callers together under one IP instead
+  // of rate-limiting per real client.
+  app.set('trust proxy', 1);
 
   // Security headers (CSP, X-Frame-Options, etc.) — this is a JSON API
   // consumed by the mobile apps and Swagger UI, not a browser-rendered site,
@@ -37,9 +45,14 @@ async function bootstrap() {
     app.enableCors();
   }
 
-  // Swagger is a dev/staging convenience — never expose the API surface at
-  // /api/docs in production.
-  if (!isProduction) {
+  // Swagger is a dev/staging convenience by default, but the interim
+  // merchant flow (spec D-2) uses Swagger UI to drive
+  // PATCH /orders/:id/accept|ready until a merchant panel exists — so it can
+  // be opted back on in production via SWAGGER_ENABLED=true. See
+  // .env.example for the operational note.
+  const swaggerEnabled =
+    !isProduction || process.env.SWAGGER_ENABLED === 'true';
+  if (swaggerEnabled) {
     const config = new DocumentBuilder()
       .setTitle('Cartman API')
       .setDescription('Cartman Delivery & Errands API')

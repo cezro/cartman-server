@@ -181,13 +181,16 @@ export class OtpService {
       data: { consumed: true },
     });
 
+    // Only the SMS channel maps onto a profile update: `profiles` has a
+    // `phone`/`phone_verified` column pair but no `email` column, so doing
+    // this unconditionally for the email channel would both (a) incorrectly
+    // flip phone_verified based on an email code and (b) throw a Prisma
+    // error writing a nonexistent `profiles.email` column.
     const targetUserId = callerUserId ?? otpRecord.user_id;
-    if (targetUserId) {
-      const profileUpdate: Record<string, unknown> = { phone_verified: true };
-      profileUpdate[identifierField] = identifier;
+    if (targetUserId && channel === 'sms') {
       await this.prisma.profiles.update({
         where: { id: targetUserId },
-        data: profileUpdate,
+        data: { phone_verified: true, phone: identifier },
       });
     }
 

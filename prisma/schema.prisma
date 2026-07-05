@@ -5,6 +5,13 @@
 //
 // Money is stored as BigInt centavos (₱99.00 = 9900).
 // Column names match the existing DB exactly.
+//
+// Provisioning order for a fresh database: apply cartman-mobile's
+// supabase/migrations/*.sql FIRST (source of truth — creates things
+// `prisma db push` cannot, like `public.order_ref_seq` and its trigger),
+// then run `prisma db push` second to sync this schema. `prisma/seed.ts`
+// also creates `order_ref_seq` idempotently as a safety net, but the
+// migrations remain the source of truth for it.
 
 generator client {
   provider = "prisma-client-js"

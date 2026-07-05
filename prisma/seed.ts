@@ -199,7 +199,22 @@ async function seedMerchant() {
   return merchant;
 }
 
+// Belt-and-suspenders safety net: `order_ref_seq` is provisioned by
+// cartman-mobile's supabase/migrations (source of truth) and should already
+// exist on any DB that ran them. `prisma db push` (used by render.yaml's
+// preDeployCommand) only pushes what's in schema.prisma and CANNOT create
+// bare sequences, so a fresh prod DB that skipped the migrations would 500
+// on every order (the `orders.ref_no` trigger calls `nextval(...)` on a
+// sequence that doesn't exist). Idempotent — safe to run against a DB where
+// the sequence already exists.
+async function ensureOrderRefSeq() {
+  await prisma.$executeRawUnsafe(
+    'create sequence if not exists public.order_ref_seq;',
+  );
+}
+
 async function main() {
+  await ensureOrderRefSeq();
   await seedCustomer();
   await seedRider();
   await seedMerchant();

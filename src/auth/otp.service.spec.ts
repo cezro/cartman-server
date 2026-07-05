@@ -172,6 +172,23 @@ describe('OtpService', () => {
         service.verifyEmailOtp('rider@example.com', '000000'),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('does not touch profiles even when bound to an authenticated user (no profiles.email column)', async () => {
+      const code = '555666';
+      const codeHash = hashOtp('rider@example.com', code);
+
+      prisma.otp_codes.findFirst.mockResolvedValue({
+        id: 'otp-6',
+        code_hash: codeHash,
+        attempts: 0,
+        user_id: 'user-1',
+      });
+
+      const result = await service.verifyEmailOtp('rider@example.com', code);
+
+      expect(result).toEqual({ verified: true });
+      expect(prisma.profiles.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('sendOtp (existing SMS flow, must keep working)', () => {

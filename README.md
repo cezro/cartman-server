@@ -57,6 +57,14 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## Database provisioning order
+
+On a fresh database, apply `cartman-mobile/supabase/migrations/*.sql` first
+(source of truth — creates `public.order_ref_seq` and the `orders.ref_no`
+trigger, which `prisma db push` cannot create), then run `npx prisma db push`
+second to sync `schema.prisma`. `prisma/seed.ts` also creates `order_ref_seq`
+idempotently as a safety net if it's ever missing.
+
 ## Supabase Database Webhooks
 
 `POST /webhooks/supabase` (`src/webhooks/webhooks.controller.ts`) receives
