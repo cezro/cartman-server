@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDeviceTokenDto } from './dto/device-token.dto';
+import { serializeProfile } from '../common/serialize-profile';
 
 @Injectable()
 export class ProfilesService {
@@ -11,7 +12,7 @@ export class ProfilesService {
       where: { id: userId },
     });
     if (!profile) throw new NotFoundException('Profile not found');
-    return profile;
+    return serializeProfile(profile);
   }
 
   async getAddresses(userId: string) {

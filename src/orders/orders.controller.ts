@@ -2,13 +2,11 @@ import {
   Controller,
   Get,
   Post,
-  Put,
   Patch,
   Body,
   Param,
   Query,
   UseGuards,
-  ParseEnumPipe,
   ForbiddenException,
 } from '@nestjs/common';
 import { OrdersService, WALLET_LOCK_FLOOR } from './orders.service';
@@ -20,6 +18,12 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { order_status } from '@prisma/client';
+import {
+  PlaceMerchantOrderDto,
+  PlaceErrandOrderDto,
+  PlacePickupDropoffOrderDto,
+  UpdateOrderStatusDto,
+} from './dto/place-order.dto';
 
 function parseOptionalFloat(value?: string): number | undefined {
   if (value == null || value === '') return undefined;
@@ -39,31 +43,46 @@ export class OrdersController {
 
   @Post('food')
   @Roles('customer')
-  placeFoodOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  placeFoodOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: PlaceMerchantOrderDto,
+  ) {
     return this.ordersService.placeFoodOrder(user.id, data);
   }
 
   @Post('grocery')
   @Roles('customer')
-  placeGroceryOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  placeGroceryOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: PlaceMerchantOrderDto,
+  ) {
     return this.ordersService.placeGroceryOrder(user.id, data);
   }
 
   @Post('errand')
   @Roles('customer')
-  placeErrandOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  placeErrandOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: PlaceErrandOrderDto,
+  ) {
     return this.ordersService.placeErrandOrder(user.id, data);
   }
 
   @Post('courier')
   @Roles('customer')
-  placeCourierOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  placeCourierOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: PlacePickupDropoffOrderDto,
+  ) {
     return this.ordersService.placeCourierOrder(user.id, data);
   }
 
   @Post('ride')
   @Roles('customer')
-  placeRideOrder(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  placeRideOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: PlacePickupDropoffOrderDto,
+  ) {
     return this.ordersService.placeRideOrder(user.id, data);
   }
 
@@ -130,8 +149,8 @@ export class OrdersController {
   advanceRiderStatus(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Body('status') status: order_status,
+    @Body() body: UpdateOrderStatusDto,
   ) {
-    return this.ordersService.advanceRiderStatus(id, user.id, status);
+    return this.ordersService.advanceRiderStatus(id, user.id, body.status);
   }
 }

@@ -47,6 +47,33 @@ describe('ProfilesService', () => {
     service = new ProfilesService(prisma as unknown as PrismaService);
   });
 
+  describe('getProfile', () => {
+    it('serializes BigInt fields to numbers (reproduces the GET /profiles/me 500)', async () => {
+      prisma.profiles.findUnique.mockResolvedValue({
+        id: 'user-1',
+        full_name: 'Juan Dela Cruz',
+        cart_points: 1500n,
+        wallet_centavos: 250000n,
+      });
+
+      const result = await service.getProfile('user-1');
+
+      expect(() => JSON.stringify(result)).not.toThrow();
+      expect(result.cart_points).toBe(1500);
+      expect(result.wallet_centavos).toBe(250000);
+      expect(typeof result.cart_points).toBe('number');
+      expect(typeof result.wallet_centavos).toBe('number');
+    });
+
+    it('throws NotFoundException when no profile exists', async () => {
+      prisma.profiles.findUnique.mockResolvedValue(null);
+
+      await expect(service.getProfile('user-1')).rejects.toThrow(
+        'Profile not found',
+      );
+    });
+  });
+
   describe('createAddress — default-address transaction', () => {
     it('unsets other defaults and creates the new address inside one transaction when is_default is true', async () => {
       prisma.addresses.create.mockResolvedValue({

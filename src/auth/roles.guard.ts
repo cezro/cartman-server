@@ -1,4 +1,9 @@
-import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from './roles.decorator';
 
@@ -24,7 +29,20 @@ export class RolesGuard implements CanActivate {
 
     const { user } = context
       .switchToHttp()
-      .getRequest<{ user: { role: string } }>();
+      .getRequest<{ user?: { role: string } }>();
+
+    // RolesGuard is registered globally (APP_GUARD) but JwtAuthGuard is only
+    // applied per-controller via @UseGuards() — global guards run before
+    // controller-level ones, so on an unauthenticated request `user` is not
+    // set yet here. Without this check that read as a crash (500, "Cannot
+    // read properties of undefined") instead of the 401 an unauthenticated
+    // request should get. Returning `false` would produce Nest's default
+    // 403 Forbidden, which is the wrong status for "not authenticated at
+    // all" — throw 401 explicitly so the two guards agree on one shape.
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
     return requiredRoles.includes(user.role);
   }
 }

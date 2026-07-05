@@ -12,6 +12,9 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
+import { CreateRiderDto } from './dto/create-rider.dto';
+import { ToggleDutyDto } from './dto/toggle-duty.dto';
+import { LogTelemetryDto } from './dto/log-telemetry.dto';
 
 @Controller('riders')
 @UseGuards(JwtAuthGuard)
@@ -20,32 +23,35 @@ export class RidersController {
 
   @Post()
   @Roles('rider', 'admin')
-  createRider(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  createRider(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: CreateRiderDto,
+  ) {
     return this.ridersService.createRider(user.id, data);
   }
 
   @Patch(':id/activate')
   @Roles('admin')
-  activateRider(@Param('id') id: string, @Body('is_active') isActive: boolean) {
-    return this.ridersService.activateRider(id, isActive);
+  activateRider(@Param('id') id: string, @Body() body: ToggleDutyDto) {
+    return this.ridersService.activateRider(id, body.is_active);
   }
 
   @Patch('me/duty')
   @Roles('rider')
   toggleDuty(
     @CurrentUser() user: AuthenticatedUser,
-    @Body('is_active') isActive: boolean,
+    @Body() body: ToggleDutyDto,
   ) {
-    return this.ridersService.toggleDuty(user.id, isActive);
+    return this.ridersService.toggleDuty(user.id, body.is_active);
   }
 
   @Post('me/telemetry')
   @Roles('rider')
   logTelemetry(
     @CurrentUser() user: AuthenticatedUser,
-    @Body('locations') locations: any[],
+    @Body() body: LogTelemetryDto,
   ) {
-    return this.ridersService.logTelemetry(user.id, locations);
+    return this.ridersService.logTelemetry(user.id, body.locations);
   }
 
   @Get('me/history')

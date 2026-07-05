@@ -12,7 +12,12 @@ import {
 import { MerchantsService } from './merchants.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard'; // Assuming this exists or will be added
+import {
+  CreateMerchantDto,
+  CreateMenuItemDto,
+  UpdateMenuItemDto,
+  UpdateMerchantStatusDto,
+} from './dto/merchant.dto';
 
 @Controller('merchants')
 @UseGuards(JwtAuthGuard)
@@ -21,7 +26,7 @@ export class MerchantsController {
 
   @Post()
   @Roles('merchant', 'admin') // Depending on who can create
-  createMerchant(@Body() data: any) {
+  createMerchant(@Body() data: CreateMerchantDto) {
     return this.merchantsService.createMerchant(data);
   }
 
@@ -29,14 +34,14 @@ export class MerchantsController {
   @Roles('admin') // Admin only
   updateMerchantStatus(
     @Param('id') id: string,
-    @Body('is_open') isOpen: boolean,
+    @Body() body: UpdateMerchantStatusDto,
   ) {
-    return this.merchantsService.updateMerchantStatus(id, isOpen);
+    return this.merchantsService.updateMerchantStatus(id, body.is_open);
   }
 
   @Post(':id/menu-items')
   @Roles('merchant', 'admin')
-  addMenuItem(@Param('id') id: string, @Body() data: any) {
+  addMenuItem(@Param('id') id: string, @Body() data: CreateMenuItemDto) {
     return this.merchantsService.addMenuItem(id, data);
   }
 
@@ -50,7 +55,7 @@ export class MerchantsController {
   updateMenuItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
-    @Body() data: any,
+    @Body() data: UpdateMenuItemDto,
   ) {
     return this.merchantsService.updateMenuItem(id, itemId, data);
   }

@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { RegisterDeviceTokenDto } from './dto/device-token.dto';
+import { CreateAddressDto, UpdateAddressDto } from './dto/address.dto';
 
 @Controller('profiles')
 @UseGuards(JwtAuthGuard)
@@ -30,7 +31,10 @@ export class ProfilesController {
   }
 
   @Post('me/addresses')
-  createAddress(@CurrentUser() user: AuthenticatedUser, @Body() data: any) {
+  createAddress(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: CreateAddressDto,
+  ) {
     return this.profilesService.createAddress(user.id, data);
   }
 
@@ -38,7 +42,7 @@ export class ProfilesController {
   updateAddress(
     @CurrentUser() user: AuthenticatedUser,
     @Param('id') id: string,
-    @Body() data: any,
+    @Body() data: UpdateAddressDto,
   ) {
     return this.profilesService.updateAddress(user.id, id, data);
   }

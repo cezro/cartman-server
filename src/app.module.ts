@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { RolesGuard } from './auth/roles.guard';
@@ -11,10 +12,19 @@ import { RidersModule } from './riders/riders.module';
 import { LedgerModule } from './ledger/ledger.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { StorageModule } from './storage/storage.module';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { LoggingInterceptor } from './common/logging.interceptor';
+import { AllExceptionsFilter } from './common/all-exceptions.filter';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Global defense-in-depth rate limit — generous default (100 req/min
+    // per IP); the OTP endpoints layer a much stricter per-route override
+    // on top via @Throttle() (see auth.controller.ts), in addition to
+    // OtpService's own per-identifier DB-backed rate limit.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     PrismaModule,
     AuthModule,
     ProfilesModule,
@@ -25,7 +35,13 @@ import { StorageModule } from './storage/storage.module';
     WebhooksModule,
     StorageModule,
   ],
-  controllers: [],
-  providers: [{ provide: APP_GUARD, useClass: RolesGuard }],
+  controllers: [AppController],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
+  ],
 })
 export class AppModule {}
