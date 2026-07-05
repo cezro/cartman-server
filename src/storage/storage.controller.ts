@@ -18,7 +18,10 @@ export class StorageController {
   constructor(private readonly storageService: StorageService) {}
 
   @Post('upload')
-  @Roles('admin', 'merchant')
+  // customer/rider included so mobile avatar + POD photo uploads work (Phase 5);
+  // callers are still JWT-authenticated, and buckets/paths carry no per-role
+  // scoping today (admin/merchant could already write anywhere).
+  @Roles('admin', 'merchant', 'customer', 'rider')
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
     @UploadedFile() file: Express.Multer.File,
