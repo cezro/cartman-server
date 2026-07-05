@@ -57,6 +57,49 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## Supabase Database Webhooks
+
+`POST /webhooks/supabase` (`src/webhooks/webhooks.controller.ts`) receives
+Supabase's Database Webhook payloads for the `orders` table and (today) logs
+what push notification it would send — see "FCM push fan-out" below for the
+exact current behavior.
+
+To wire it up in the Supabase Dashboard:
+
+1. **Settings → API** (or generate your own) — pick a long random secret and
+   set it as `SUPABASE_WEBHOOK_SECRET` in this server's `.env`. There is no
+   fallback default: if this var is unset, the endpoint rejects every request
+   with 401 (see `.env.example`'s comment on the var).
+2. **Database → Webhooks → Create a new hook**:
+   - Table: `orders`
+   - Events: `INSERT` and `UPDATE`
+   - Type: HTTP Request → `POST`
+   - URL: `https://<your-server-host>/webhooks/supabase` (use a tunnel like
+     ngrok for local dev, since Supabase's hosted webhook dispatcher cannot
+     reach `localhost`)
+   - HTTP Headers: add `x-supabase-webhook-secret: <the same value as
+     SUPABASE_WEBHOOK_SECRET>`
+3. Save. Supabase will POST the changed row (plus the previous row, for
+   `UPDATE`) as `{ type, table, record, old_record, schema }` on every insert
+   or update to `orders`.
+
+### FCM push fan-out — current state (C-4.2)
+
+`WebhooksService.handleOrderWebhook` **only logs** what it would send today —
+there is no `device_tokens` lookup, no FCM/firebase-admin SDK call, no
+fan-out to on-duty riders when an order goes to `ready_for_pickup`, and no
+wallet-lockout exclusion. On an `UPDATE` where `record.status !==
+old_record.status`, it logs one line for the customer (`record.customer_id`)
+and, if `record.assigned_rider_id` is set, one line for that rider. Real
+push sending, `device_tokens` fan-out, and the lockout exclusion are still to
+be built.
+
+`FCM_PROJECT_ID` / `FCM_CLIENT_EMAIL` / `FCM_PRIVATE_KEY` (see
+`.env.example`) are optional in Phase 1. If any are missing, the service logs
+a warning and no-ops instead of attempting to send — it never crashes the
+webhook (it always returns `{ success: true }` to Supabase so the dispatcher
+doesn't retry indefinitely).
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
