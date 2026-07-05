@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { serializeOrder } from '../orders/serialize-order';
 
 @Injectable()
 export class RidersService {
@@ -45,10 +46,15 @@ export class RidersService {
   }
 
   async getDeliveryHistory(riderId: string) {
-    return this.prisma.orders.findMany({
+    const orders = await this.prisma.orders.findMany({
       where: { assigned_rider_id: riderId, status: 'delivered' },
       orderBy: { updated_at: 'desc' },
       take: 20,
+      include: {
+        order_items: true,
+        order_stops: true,
+      },
     });
+    return orders.map((order) => serializeOrder(order));
   }
 }
