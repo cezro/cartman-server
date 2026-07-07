@@ -12,6 +12,7 @@ import { RidersModule } from './riders/riders.module';
 import { LedgerModule } from './ledger/ledger.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { StorageModule } from './storage/storage.module';
+import { AdminModule } from './admin/admin.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { LoggingInterceptor } from './common/logging.interceptor';
@@ -34,6 +35,7 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
     LedgerModule,
     WebhooksModule,
     StorageModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [
