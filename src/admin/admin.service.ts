@@ -1,7 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { order_status, wallet_txn_type } from '@prisma/client';
 import { manilaMidnightUtc } from '../common/manila-time';
+import { serializeOrder } from '../orders/serialize-order';
+import { AdminOrdersQueryDto } from './dto/admin.dto';
+
+const CUSTOMER_SELECT = { id: true, full_name: true, phone: true } as const;
+const RIDER_SELECT = { id: true, full_name: true, phone: true } as const;
 
 // Mirrors LedgerService's private CREDIT_TYPES (src/ledger/ledger.service.ts)
 // — duplicated rather than imported/exported so this module stays a pure
@@ -146,6 +151,105 @@ export class AdminService {
         outstanding_total: Number(outstandingTotal),
       },
       avg_delivery_secs_today: avgDeliverySecsToday,
+    };
+  }
+
+  async getOrders(query: AdminOrdersQueryDto) {
+    const { limit, offset, status, type, rider_id, customer_id, merchant_id } =
+      query;
+
+    const where: Record<string, unknown> = {};
+    if (status?.length) where.status = { in: status };
+    if (type) where.type = type;
+    if (rider_id) where.assigned_rider_id = rider_id;
+    if (customer_id) where.customer_id = customer_id;
+    if (merchant_id) where.merchant_id = merchant_id;
+
+    const [orders, total] = await Promise.all([
+      this.prisma.orders.findMany({
+        where,
+        orderBy: { created_at: 'desc' },
+        take: limit,
+        skip: offset,
+        include: {
+          customer: { select: CUSTOMER_SELECT },
+          rider: { select: RIDER_SELECT },
+        },
+      }),
+      this.prisma.orders.count({ where }),
+    ]);
+
+    return {
+      items: orders.map((order: Record<string, any>) => serializeOrder(order)),
+      total,
+      limit,
+      offset,
+    };
+  }
+
+  async getOrderById(id: string) {
+    const order = await this.prisma.orders.findUnique({
+      where: { id },
+      include: {
+        order_items: true,
+        order_stops: true,
+        customer: { select: CUSTOMER_SELECT },
+        rider: { select: RIDER_SELECT },
+      },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    let riderExtra: { vehicle: string; plate_no: string; rating: number } | null =
+      null;
+    let lastLocation: { lat: number; lng: number; recorded_at: Date } | null =
+      null;
+
+    if (order.assigned_rider_id) {
+      const [riderRow, lastLoc] = await Promise.all([
+        this.prisma.riders.findUnique({
+          where: { id: order.assigned_rider_id },
+        }),
+        this.prisma.rider_locations.findFirst({
+          where: { rider_id: order.assigned_rider_id },
+          orderBy: { recorded_at: 'desc' },
+        }),
+      ]);
+
+      if (riderRow) {
+        riderExtra = {
+          vehicle: riderRow.vehicle,
+          plate_no: riderRow.plate_no,
+          rating: Number(riderRow.rating),
+        };
+      }
+      if (lastLoc) {
+        lastLocation = {
+          lat: lastLoc.lat,
+          lng: lastLoc.lng,
+          recorded_at: lastLoc.recorded_at,
+        };
+      }
+    }
+
+    const ledgerTxns = await this.prisma.rider_wallet_transactions.findMany({
+      where: { order_id: id },
+    });
+
+    return {
+      ...serializeOrder(order as Record<string, any>),
+      rider:
+        (order as Record<string, any>).rider && riderExtra
+          ? { ...(order as Record<string, any>).rider, ...riderExtra }
+          : ((order as Record<string, any>).rider ?? null),
+      last_location: lastLocation,
+      ledger_entries: ledgerTxns.map(
+        (t: { id: bigint; type: string; amount: bigint; created_at: Date }) => ({
+          id: t.id.toString(),
+          type: t.type,
+          amount: t.amount.toString(),
+          created_at: t.created_at,
+        }),
+      ),
     };
   }
 }
