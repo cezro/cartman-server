@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { wallet_txn_type } from '@prisma/client';
+import { manilaMidnightUtc } from '../common/manila-time';
 
 const CREDIT_TYPES: wallet_txn_type[] = [
   'credit_remittance',
@@ -64,31 +65,14 @@ export class LedgerService {
   }
 
   // Sum of today's credit_delivery_reward amounts, where "today" is the
-  // Philippines calendar day (Asia/Manila, UTC+8 fixed — no DST).
-  // Manila has no DST, so "Manila midnight" is always UTC-minus-8-hours from
-  // the naive local wall clock, i.e. computed by taking the current instant,
-  // shifting it forward 8 hours to read Manila's local Y/M/D, then
-  // constructing that same Y/M/D at 00:00 UTC and shifting BACK 8 hours to
-  // get the UTC instant of Manila midnight. Concretely:
-  //   manilaNow = now + 8h
-  //   manilaMidnightUtc = Date.UTC(manilaNow.Y, manilaNow.M, manilaNow.D) - 8h
+  // Philippines calendar day (Asia/Manila, UTC+8 fixed — no DST). See
+  // manilaMidnightUtc() in src/common/manila-time.ts for the boundary math.
   async getEarningsToday(riderId: string): Promise<number> {
-    const now = new Date();
-    const manilaOffsetMs = 8 * 60 * 60 * 1000;
-    const manilaNow = new Date(now.getTime() + manilaOffsetMs);
-    const manilaMidnightUtc = new Date(
-      Date.UTC(
-        manilaNow.getUTCFullYear(),
-        manilaNow.getUTCMonth(),
-        manilaNow.getUTCDate(),
-      ) - manilaOffsetMs,
-    );
-
     const txns = await this.prisma.rider_wallet_transactions.findMany({
       where: {
         rider_id: riderId,
         type: 'credit_delivery_reward',
-        created_at: { gte: manilaMidnightUtc },
+        created_at: { gte: manilaMidnightUtc() },
       },
       select: { amount: true },
     });

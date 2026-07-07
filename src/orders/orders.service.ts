@@ -13,14 +13,15 @@ import { serializeOrder } from './serialize-order';
 export const WALLET_LOCK_FLOOR = -200_000n;
 
 // Statuses that count toward a rider's active order load for the
-// queue-depth guard on claimOrder (max 1 active + 1 queued).
-const ACTIVE_RIDER_STATUSES: order_status[] = [
+// queue-depth guard on claimOrder (max 1 active + 1 queued). Exported for
+// reuse by AdminService's reassign-order active-count guard.
+export const ACTIVE_RIDER_STATUSES: order_status[] = [
   order_status.accepted,
   order_status.arrived_at_merchant,
   order_status.picked_up,
   order_status.in_transit,
 ];
-const MAX_ACTIVE_ORDERS_PER_RIDER = 2;
+export const MAX_ACTIVE_ORDERS_PER_RIDER = 2;
 
 // Legal rider-driven forward transitions. advanceRiderStatus rejects any
 // target that isn't exactly NEXT[order.status] for the order's current status.
