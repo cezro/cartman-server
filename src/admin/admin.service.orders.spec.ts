@@ -4,15 +4,30 @@ import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { AdminOrdersQueryDto } from './dto/admin.dto';
 
+// Precise shape of the findMany() call args getOrders issues, so the mock
+// is typed to give mock.calls[0][0] this shape directly instead of `any`.
+interface OrdersFindManyCall {
+  where: Record<string, unknown>;
+  orderBy: { created_at: string };
+  take: number;
+  skip: number;
+}
+
 describe('AdminService.getOrders', () => {
   let service: AdminService;
   let prisma: {
-    orders: { findMany: jest.Mock; count: jest.Mock };
+    orders: {
+      findMany: jest.Mock<Promise<any[]>, [OrdersFindManyCall]>;
+      count: jest.Mock;
+    };
   };
 
   beforeEach(() => {
     prisma = {
-      orders: { findMany: jest.fn(), count: jest.fn() },
+      orders: {
+        findMany: jest.fn<Promise<any[]>, [OrdersFindManyCall]>(),
+        count: jest.fn(),
+      },
     };
     service = new AdminService(
       prisma as unknown as PrismaService,
@@ -22,11 +37,23 @@ describe('AdminService.getOrders', () => {
 
   it('returns the pagination envelope with items, total, limit, offset', async () => {
     prisma.orders.findMany.mockResolvedValue([
-      { id: 'o1', total: 10000n, subtotal: 9000n, delivery_fee: 1000n, discount: 0n, delivery_payout: 1000n, customer: { id: 'c1', full_name: 'Juan', phone: '+639171234567' }, rider: null },
+      {
+        id: 'o1',
+        total: 10000n,
+        subtotal: 9000n,
+        delivery_fee: 1000n,
+        discount: 0n,
+        delivery_payout: 1000n,
+        customer: { id: 'c1', full_name: 'Juan', phone: '+639171234567' },
+        rider: null,
+      },
     ]);
     prisma.orders.count.mockResolvedValue(1);
 
-    const query = Object.assign(new AdminOrdersQueryDto(), { limit: 20, offset: 0 });
+    const query = Object.assign(new AdminOrdersQueryDto(), {
+      limit: 20,
+      offset: 0,
+    });
     const result = await service.getOrders(query);
 
     expect(result.total).toBe(1);
@@ -37,11 +64,23 @@ describe('AdminService.getOrders', () => {
 
   it('converts BigInt money fields to Number in each item', async () => {
     prisma.orders.findMany.mockResolvedValue([
-      { id: 'o1', total: 10000n, subtotal: 9000n, delivery_fee: 1000n, discount: 0n, delivery_payout: 1000n, customer: { id: 'c1', full_name: 'Juan', phone: '+639171234567' }, rider: null },
+      {
+        id: 'o1',
+        total: 10000n,
+        subtotal: 9000n,
+        delivery_fee: 1000n,
+        discount: 0n,
+        delivery_payout: 1000n,
+        customer: { id: 'c1', full_name: 'Juan', phone: '+639171234567' },
+        rider: null,
+      },
     ]);
     prisma.orders.count.mockResolvedValue(1);
 
-    const query = Object.assign(new AdminOrdersQueryDto(), { limit: 20, offset: 0 });
+    const query = Object.assign(new AdminOrdersQueryDto(), {
+      limit: 20,
+      offset: 0,
+    });
     const result = await service.getOrders(query);
 
     expect(result.items[0].total).toBe(10000);
@@ -184,7 +223,8 @@ describe('AdminService.getOrderById', () => {
       id: 'rider-1',
       vehicle: 'Motorcycle',
       plate_no: 'ABC-123',
-      rating: { toString: () => '4.8' } as any,
+      // Stand-in for a Prisma Decimal: Number() coerces it via toString().
+      rating: { toString: () => '4.8' },
     });
     prisma.rider_locations.findFirst.mockResolvedValue({
       lat: 10.5,

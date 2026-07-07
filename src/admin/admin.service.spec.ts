@@ -2,12 +2,30 @@ import { AdminService } from './admin.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 
+// Typed call shapes so mock.calls entries aren't `any` — mirrors the typed
+// mock pattern in admin.service.mutations.spec.ts.
+interface GroupByCall {
+  by: string[];
+  where?: { created_at?: { gte: Date } };
+}
+interface CountCall {
+  where?: {
+    status?: unknown;
+    updated_at?: { gte: Date };
+  };
+}
+
 describe('AdminService.getStats', () => {
   let service: AdminService;
   let prisma: {
-    orders: { count: jest.Mock; findMany: jest.Mock };
+    orders: {
+      count: jest.Mock<Promise<number>, [CountCall]>;
+      findMany: jest.Mock;
+    };
     riders: { count: jest.Mock };
-    rider_wallet_transactions: { groupBy: jest.Mock };
+    rider_wallet_transactions: {
+      groupBy: jest.Mock<Promise<unknown[]>, [GroupByCall]>;
+    };
   };
 
   function defaultMocks() {
@@ -19,9 +37,14 @@ describe('AdminService.getStats', () => {
 
   beforeEach(() => {
     prisma = {
-      orders: { count: jest.fn(), findMany: jest.fn() },
+      orders: {
+        count: jest.fn<Promise<number>, [CountCall]>(),
+        findMany: jest.fn(),
+      },
       riders: { count: jest.fn() },
-      rider_wallet_transactions: { groupBy: jest.fn() },
+      rider_wallet_transactions: {
+        groupBy: jest.fn<Promise<unknown[]>, [GroupByCall]>(),
+      },
     };
     defaultMocks();
     service = new AdminService(
@@ -45,10 +68,26 @@ describe('AdminService.getStats', () => {
         // ['rider_id', 'type']). Distinguish by the `by` array.
         if (by.includes('rider_id')) {
           return Promise.resolve([
-            { rider_id: 'r1', type: 'credit_remittance', _sum: { amount: 2000n } },
-            { rider_id: 'r1', type: 'debit_cod_order', _sum: { amount: 5000n } },
-            { rider_id: 'r2', type: 'debit_commission', _sum: { amount: 1000n } },
-            { rider_id: 'r3', type: 'credit_remittance', _sum: { amount: 2000n } },
+            {
+              rider_id: 'r1',
+              type: 'credit_remittance',
+              _sum: { amount: 2000n },
+            },
+            {
+              rider_id: 'r1',
+              type: 'debit_cod_order',
+              _sum: { amount: 5000n },
+            },
+            {
+              rider_id: 'r2',
+              type: 'debit_commission',
+              _sum: { amount: 1000n },
+            },
+            {
+              rider_id: 'r3',
+              type: 'credit_remittance',
+              _sum: { amount: 2000n },
+            },
           ]);
         }
         return Promise.resolve([]);
@@ -61,9 +100,10 @@ describe('AdminService.getStats', () => {
     expect(result.remittance.outstanding_total).toBe(4000);
     // Exactly one call must carry rider_id — asserts we never loop
     // getNetCash per rider (one groupBy call for the whole fold).
-    const riderGroupByCalls = prisma.rider_wallet_transactions.groupBy.mock.calls.filter(
-      ([args]) => args.by.includes('rider_id'),
-    );
+    const riderGroupByCalls =
+      prisma.rider_wallet_transactions.groupBy.mock.calls.filter(([args]) =>
+        args.by.includes('rider_id'),
+      );
     expect(riderGroupByCalls).toHaveLength(1);
   });
 
@@ -99,16 +139,17 @@ describe('AdminService.getStats', () => {
     await service.getStats();
 
     const deliveredTodayCall = prisma.orders.count.mock.calls.find(
-      ([args]) => args.where.status === 'delivered',
+      ([args]) => args.where?.status === 'delivered',
     );
-    expect(deliveredTodayCall[0].where.updated_at.gte.toISOString()).toBe(
+    expect(deliveredTodayCall?.[0].where?.updated_at?.gte.toISOString()).toBe(
       '2026-07-04T16:00:00.000Z',
     );
 
-    const codGroupByCall = prisma.rider_wallet_transactions.groupBy.mock.calls.find(
-      ([args]) => !args.by.includes('rider_id'),
-    );
-    expect(codGroupByCall[0].where.created_at.gte.toISOString()).toBe(
+    const codGroupByCall =
+      prisma.rider_wallet_transactions.groupBy.mock.calls.find(
+        ([args]) => !args.by.includes('rider_id'),
+      );
+    expect(codGroupByCall?.[0].where?.created_at?.gte.toISOString()).toBe(
       '2026-07-04T16:00:00.000Z',
     );
   });

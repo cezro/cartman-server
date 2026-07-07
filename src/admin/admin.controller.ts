@@ -10,7 +10,13 @@ import {
 import { AdminService } from './admin.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
-import { AdminOrdersQueryDto, ReassignOrderDto } from './dto/admin.dto';
+import {
+  AdminOrdersQueryDto,
+  ReassignOrderDto,
+  AdminRidersQueryDto,
+  AdminMerchantsQueryDto,
+  AdminLedgerQueryDto,
+} from './dto/admin.dto';
 
 // Single admin surface for the Next.js admin dashboard prototype. Every
 // route here is admin-only — enforced once at class level (RolesGuard reads
@@ -45,5 +51,20 @@ export class AdminController {
   @Patch('orders/:id/reassign')
   reassignOrder(@Param('id') id: string, @Body() body: ReassignOrderDto) {
     return this.adminService.reassignOrder(id, body.rider_id);
+  }
+
+  @Get('riders')
+  getRiders(@Query() query: AdminRidersQueryDto) {
+    return this.adminService.getRiders(query);
+  }
+
+  @Get('merchants')
+  getMerchants(@Query() query: AdminMerchantsQueryDto) {
+    return this.adminService.getMerchants(query);
+  }
+
+  @Get('ledger/transactions')
+  getLedgerTransactions(@Query() query: AdminLedgerQueryDto) {
+    return this.adminService.getLedgerTransactions(query);
   }
 }

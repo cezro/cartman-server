@@ -7,13 +7,23 @@ import { PrismaService } from '../prisma/prisma.service';
 import { order_status, wallet_txn_type } from '@prisma/client';
 import { manilaMidnightUtc } from '../common/manila-time';
 import { serializeOrder } from '../orders/serialize-order';
-import { AdminOrdersQueryDto } from './dto/admin.dto';
+import {
+  AdminOrdersQueryDto,
+  AdminRidersQueryDto,
+  AdminMerchantsQueryDto,
+  AdminLedgerQueryDto,
+} from './dto/admin.dto';
 import { LedgerService } from '../ledger/ledger.service';
 import {
   ACTIVE_RIDER_STATUSES,
   MAX_ACTIVE_ORDERS_PER_RIDER,
   WALLET_LOCK_FLOOR,
 } from '../orders/orders.service';
+import {
+  serializeAdminRider,
+  serializeAdminMerchant,
+  serializeAdminLedgerTxn,
+} from './serialize-admin';
 
 // Statuses from which an admin may reassign an order to a different rider —
 // once a rider has physically picked the order up, reassigning stops making
@@ -27,6 +37,13 @@ const REASSIGNABLE_STATUSES: order_status[] = [
 
 const CUSTOMER_SELECT = { id: true, full_name: true, phone: true } as const;
 const RIDER_SELECT = { id: true, full_name: true, phone: true } as const;
+
+// Same "active" definition as GET /admin/stats's orders.active (everything
+// except the two terminal statuses) — reused for the per-merchant and
+// per-rider active_orders counts on the fleet/merchant list endpoints.
+const NON_TERMINAL_ORDER_STATUSES: order_status[] = Object.values(
+  order_status,
+).filter((s) => s !== order_status.delivered && s !== order_status.canceled);
 
 // Mirrors LedgerService's private CREDIT_TYPES (src/ledger/ledger.service.ts)
 // — duplicated rather than imported/exported so this module stays a pure
@@ -110,13 +127,11 @@ export class AdminService {
     ]);
 
     const codExpected =
-      codTodayRows.find(
-        (r: { type: string }) => r.type === 'debit_cod_order',
-      )?._sum.amount ?? 0n;
+      codTodayRows.find((r: { type: string }) => r.type === 'debit_cod_order')
+        ?._sum.amount ?? 0n;
     const codRemitted =
-      codTodayRows.find(
-        (r: { type: string }) => r.type === 'credit_remittance',
-      )?._sum.amount ?? 0n;
+      codTodayRows.find((r: { type: string }) => r.type === 'credit_remittance')
+        ?._sum.amount ?? 0n;
 
     const netByRider = new Map<string, bigint>();
     for (const row of netCashRows as {
@@ -222,8 +237,11 @@ export class AdminService {
     });
     if (!order) throw new NotFoundException('Order not found');
 
-    let riderExtra: { vehicle: string; plate_no: string; rating: number } | null =
-      null;
+    let riderExtra: {
+      vehicle: string;
+      plate_no: string;
+      rating: number;
+    } | null = null;
     let lastLocation: { lat: number; lng: number; recorded_at: Date } | null =
       null;
 
@@ -261,12 +279,17 @@ export class AdminService {
     return {
       ...serializeOrder(order as Record<string, any>),
       rider:
-        (order as Record<string, any>).rider && riderExtra
-          ? { ...(order as Record<string, any>).rider, ...riderExtra }
-          : ((order as Record<string, any>).rider ?? null),
+        order.rider && riderExtra
+          ? { ...order.rider, ...riderExtra }
+          : (order.rider ?? null),
       last_location: lastLocation,
       ledger_entries: ledgerTxns.map(
-        (t: { id: bigint; type: string; amount: bigint; created_at: Date }) => ({
+        (t: {
+          id: bigint;
+          type: string;
+          amount: bigint;
+          created_at: Date;
+        }) => ({
           id: t.id.toString(),
           type: t.type,
           amount: t.amount.toString(),
@@ -329,9 +352,7 @@ export class AdminService {
     }
 
     if (riderId === (order as Record<string, any>).assigned_rider_id) {
-      throw new BadRequestException(
-        'Order is already assigned to this rider',
-      );
+      throw new BadRequestException('Order is already assigned to this rider');
     }
 
     // Race-safe: the WHERE clause re-checks the order is still in a
@@ -349,5 +370,206 @@ export class AdminService {
 
     const updated = await this.prisma.orders.findUnique({ where: { id } });
     return serializeOrder(updated as Record<string, any>);
+  }
+
+  async getRiders(query: AdminRidersQueryDto) {
+    const { limit, offset, on_duty } = query;
+    const where: Record<string, unknown> = {};
+    if (on_duty !== undefined) where.is_active = on_duty;
+
+    const [riders, total] = await Promise.all([
+      this.prisma.riders.findMany({
+        where,
+        take: limit,
+        skip: offset,
+        include: { profile: { select: { full_name: true, phone: true } } },
+      }),
+      this.prisma.riders.count({ where }),
+    ]);
+
+    const riderIds = riders.map((r: { id: string }) => r.id);
+
+    // Three batch queries total, regardless of how many riders are on this
+    // page — NO per-rider looping.
+    const [activeCountRows, netCashRows, lastLocationRows] =
+      riderIds.length === 0
+        ? [[], [], []]
+        : await Promise.all([
+            this.prisma.orders.groupBy({
+              by: ['assigned_rider_id'],
+              where: {
+                assigned_rider_id: { in: riderIds },
+                status: { in: ACTIVE_RIDER_STATUSES },
+              },
+              _count: { _all: true },
+            }),
+            this.prisma.rider_wallet_transactions.groupBy({
+              by: ['rider_id', 'type'],
+              where: { rider_id: { in: riderIds } },
+              _sum: { amount: true },
+            }),
+            this.prisma.rider_locations.findMany({
+              where: { rider_id: { in: riderIds } },
+              distinct: ['rider_id'],
+              orderBy: { recorded_at: 'desc' },
+            }),
+          ]);
+
+    const activeCountByRider = new Map<string, number>();
+    for (const row of activeCountRows as {
+      assigned_rider_id: string | null;
+      _count: { _all: number };
+    }[]) {
+      if (row.assigned_rider_id) {
+        activeCountByRider.set(row.assigned_rider_id, row._count._all);
+      }
+    }
+
+    const netCashByRider = new Map<string, bigint>();
+    for (const row of netCashRows as {
+      rider_id: string;
+      type: wallet_txn_type;
+      _sum: { amount: bigint | null };
+    }[]) {
+      const amount = row._sum.amount ?? 0n;
+      const signed = CREDIT_TYPES.includes(row.type) ? amount : -amount;
+      netCashByRider.set(
+        row.rider_id,
+        (netCashByRider.get(row.rider_id) ?? 0n) + signed,
+      );
+    }
+
+    const lastLocationByRider = new Map<
+      string,
+      { lat: number; lng: number; recorded_at: Date }
+    >();
+    for (const loc of lastLocationRows as {
+      rider_id: string;
+      lat: number;
+      lng: number;
+      recorded_at: Date;
+    }[]) {
+      // rider_locations.findMany with distinct:['rider_id'] + orderBy
+      // recorded_at desc gives exactly the latest row per rider already, so
+      // the first occurrence per rider_id here is the last known location.
+      if (!lastLocationByRider.has(loc.rider_id)) {
+        lastLocationByRider.set(loc.rider_id, {
+          lat: loc.lat,
+          lng: loc.lng,
+          recorded_at: loc.recorded_at,
+        });
+      }
+    }
+
+    const floor = Number(WALLET_LOCK_FLOOR);
+
+    const items = riders.map((r) => {
+      const netCash = netCashByRider.get(r.id) ?? 0n;
+      return serializeAdminRider({
+        id: r.id,
+        full_name: r.profile?.full_name ?? '',
+        phone: r.profile?.phone ?? null,
+        is_active: r.is_active,
+        vehicle: r.vehicle,
+        plate_no: r.plate_no,
+        rating: r.rating,
+        acceptance_rate: r.acceptance_rate,
+        total_trips: r.total_trips,
+        active_orders: activeCountByRider.get(r.id) ?? 0,
+        net_cash: netCash,
+        wallet_locked: Number(netCash) <= floor,
+        last_location: lastLocationByRider.get(r.id) ?? null,
+      });
+    });
+
+    return { items, total, limit, offset };
+  }
+
+  async getMerchants(query: AdminMerchantsQueryDto) {
+    const { limit, offset, is_open } = query;
+    const where: Record<string, unknown> = {};
+    if (is_open !== undefined) where.is_open = is_open;
+
+    const [merchants, total] = await Promise.all([
+      this.prisma.merchants.findMany({ where, take: limit, skip: offset }),
+      this.prisma.merchants.count({ where }),
+    ]);
+
+    const merchantIds = merchants.map((m: { id: string }) => m.id);
+
+    const activeCountRows = merchantIds.length
+      ? await this.prisma.orders.groupBy({
+          by: ['merchant_id'],
+          where: {
+            merchant_id: { in: merchantIds },
+            status: { in: NON_TERMINAL_ORDER_STATUSES },
+          },
+          _count: { _all: true },
+        })
+      : [];
+
+    const activeCountByMerchant = new Map<string, number>();
+    for (const row of activeCountRows as {
+      merchant_id: string | null;
+      _count: { _all: number };
+    }[]) {
+      if (row.merchant_id) {
+        activeCountByMerchant.set(row.merchant_id, row._count._all);
+      }
+    }
+
+    const items = merchants.map((m) =>
+      serializeAdminMerchant({
+        ...m,
+        active_orders: activeCountByMerchant.get(m.id) ?? 0,
+      }),
+    );
+
+    return { items, total, limit, offset };
+  }
+
+  async getLedgerTransactions(query: AdminLedgerQueryDto) {
+    const { limit, offset, rider_id, order_id, type } = query;
+    const where: Record<string, unknown> = {};
+    if (rider_id) where.rider_id = rider_id;
+    if (order_id) where.order_id = order_id;
+    if (type) where.type = type;
+
+    const [txns, total] = await Promise.all([
+      this.prisma.rider_wallet_transactions.findMany({
+        where,
+        orderBy: { created_at: 'desc' },
+        take: limit,
+        skip: offset,
+        include: {
+          rider: { include: { profile: { select: { full_name: true } } } },
+        },
+      }),
+      this.prisma.rider_wallet_transactions.count({ where }),
+    ]);
+
+    const items = (
+      txns as {
+        id: bigint;
+        rider_id: string;
+        type: wallet_txn_type;
+        amount: bigint;
+        order_id: string | null;
+        created_at: Date;
+        rider?: { profile?: { full_name: string } };
+      }[]
+    ).map((t) =>
+      serializeAdminLedgerTxn({
+        id: t.id,
+        rider_id: t.rider_id,
+        rider_name: t.rider?.profile?.full_name ?? '',
+        type: t.type,
+        amount: t.amount,
+        order_id: t.order_id,
+        created_at: t.created_at,
+      }),
+    );
+
+    return { items, total, limit, offset };
   }
 }
