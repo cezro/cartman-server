@@ -1,5 +1,6 @@
 import { AdminService } from './admin.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { LedgerService } from '../ledger/ledger.service';
 
 describe('AdminService.getStats', () => {
   let service: AdminService;
@@ -23,7 +24,10 @@ describe('AdminService.getStats', () => {
       rider_wallet_transactions: { groupBy: jest.fn() },
     };
     defaultMocks();
-    service = new AdminService(prisma as unknown as PrismaService);
+    service = new AdminService(
+      prisma as unknown as PrismaService,
+      {} as LedgerService,
+    );
   });
 
   afterEach(() => {

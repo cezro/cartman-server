@@ -1,9 +1,29 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { order_status, wallet_txn_type } from '@prisma/client';
 import { manilaMidnightUtc } from '../common/manila-time';
 import { serializeOrder } from '../orders/serialize-order';
 import { AdminOrdersQueryDto } from './dto/admin.dto';
+import { LedgerService } from '../ledger/ledger.service';
+import {
+  ACTIVE_RIDER_STATUSES,
+  MAX_ACTIVE_ORDERS_PER_RIDER,
+  WALLET_LOCK_FLOOR,
+} from '../orders/orders.service';
+
+// Statuses from which an admin may reassign an order to a different rider —
+// once a rider has physically picked the order up, reassigning stops making
+// sense (mirrors the rider-driven forward-progression invariants in
+// orders.service.ts's NEXT map).
+const REASSIGNABLE_STATUSES: order_status[] = [
+  order_status.ready_for_pickup,
+  order_status.accepted,
+  order_status.arrived_at_merchant,
+];
 
 const CUSTOMER_SELECT = { id: true, full_name: true, phone: true } as const;
 const RIDER_SELECT = { id: true, full_name: true, phone: true } as const;
@@ -19,7 +39,10 @@ const CREDIT_TYPES: wallet_txn_type[] = [
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly ledgerService: LedgerService,
+  ) {}
 
   async getStats() {
     const midnight = manilaMidnightUtc();
@@ -251,5 +274,80 @@ export class AdminService {
         }),
       ),
     };
+  }
+
+  async cancelOrder(id: string) {
+    // Race-safe: the WHERE clause re-checks the terminal-status guard
+    // atomically in the same statement as the write, so a concurrent
+    // cancel/delivery can't both "succeed".
+    const result = await this.prisma.orders.updateMany({
+      where: {
+        id,
+        status: { notIn: [order_status.delivered, order_status.canceled] },
+      },
+      data: { status: order_status.canceled },
+    });
+
+    if (result.count === 0) {
+      const existing = await this.prisma.orders.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundException('Order not found');
+      throw new BadRequestException('Order can no longer be canceled');
+    }
+
+    const order = await this.prisma.orders.findUnique({ where: { id } });
+    return serializeOrder(order as Record<string, any>);
+  }
+
+  async reassignOrder(id: string, riderId: string) {
+    const order = await this.prisma.orders.findUnique({ where: { id } });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const rider = await this.prisma.riders.findUnique({
+      where: { id: riderId },
+    });
+    if (!rider?.is_active) {
+      throw new BadRequestException('Rider does not exist or is not active');
+    }
+
+    const netCash = await this.ledgerService.getNetCash(riderId);
+    if (netCash <= WALLET_LOCK_FLOOR) {
+      throw new BadRequestException(
+        'Rider wallet is locked — cannot accept orders',
+      );
+    }
+
+    const activeCount = await this.prisma.orders.count({
+      where: {
+        assigned_rider_id: riderId,
+        status: { in: ACTIVE_RIDER_STATUSES },
+      },
+    });
+    if (activeCount >= MAX_ACTIVE_ORDERS_PER_RIDER) {
+      throw new BadRequestException(
+        'Rider already has a full active order queue',
+      );
+    }
+
+    if (riderId === (order as Record<string, any>).assigned_rider_id) {
+      throw new BadRequestException(
+        'Order is already assigned to this rider',
+      );
+    }
+
+    // Race-safe: the WHERE clause re-checks the order is still in a
+    // reassignable status atomically in the same statement as the write.
+    const result = await this.prisma.orders.updateMany({
+      where: { id, status: { in: REASSIGNABLE_STATUSES } },
+      data: { assigned_rider_id: riderId, status: order_status.accepted },
+    });
+
+    if (result.count === 0) {
+      const existing = await this.prisma.orders.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundException('Order not found');
+      throw new BadRequestException('Order can no longer be reassigned');
+    }
+
+    const updated = await this.prisma.orders.findUnique({ where: { id } });
+    return serializeOrder(updated as Record<string, any>);
   }
 }

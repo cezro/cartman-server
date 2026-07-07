@@ -1,6 +1,6 @@
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
-import { AdminOrdersQueryDto } from './admin.dto';
+import { AdminOrdersQueryDto, ReassignOrderDto } from './admin.dto';
 
 describe('AdminOrdersQueryDto', () => {
   it('splits a CSV status query param into an array', async () => {
@@ -62,5 +62,30 @@ describe('AdminOrdersQueryDto', () => {
     expect(errors).toHaveLength(0);
     expect(dto.limit).toBe(20);
     expect(dto.offset).toBe(0);
+  });
+});
+
+describe('ReassignOrderDto', () => {
+  it('requires rider_id to be a UUID', async () => {
+    const dto = plainToInstance(ReassignOrderDto, { rider_id: 'not-a-uuid' });
+    const errors = await validate(dto);
+
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a missing rider_id', async () => {
+    const dto = plainToInstance(ReassignOrderDto, {});
+    const errors = await validate(dto);
+
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('accepts a valid UUID rider_id', async () => {
+    const dto = plainToInstance(ReassignOrderDto, {
+      rider_id: '123e4567-e89b-12d3-a456-426614174000',
+    });
+    const errors = await validate(dto);
+
+    expect(errors).toHaveLength(0);
   });
 });

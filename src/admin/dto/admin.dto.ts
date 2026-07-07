@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsUUID } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsUUID } from 'class-validator';
 import { order_status, order_type } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
@@ -34,4 +34,11 @@ export class AdminOrdersQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
   merchant_id?: string;
+}
+
+/** Body for PATCH /admin/orders/:id/reassign. */
+export class ReassignOrderDto {
+  @IsNotEmpty()
+  @IsUUID()
+  rider_id!: string;
 }

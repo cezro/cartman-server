@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { LedgerService } from '../ledger/ledger.service';
 import { AdminOrdersQueryDto } from './dto/admin.dto';
 
 describe('AdminService.getOrders', () => {
@@ -13,7 +14,10 @@ describe('AdminService.getOrders', () => {
     prisma = {
       orders: { findMany: jest.fn(), count: jest.fn() },
     };
-    service = new AdminService(prisma as unknown as PrismaService);
+    service = new AdminService(
+      prisma as unknown as PrismaService,
+      {} as LedgerService,
+    );
   });
 
   it('returns the pagination envelope with items, total, limit, offset', async () => {
@@ -113,7 +117,10 @@ describe('AdminService.getOrderById', () => {
       rider_locations: { findFirst: jest.fn() },
       rider_wallet_transactions: { findMany: jest.fn() },
     };
-    service = new AdminService(prisma as unknown as PrismaService);
+    service = new AdminService(
+      prisma as unknown as PrismaService,
+      {} as LedgerService,
+    );
   });
 
   it('throws NotFoundException when the order does not exist', async () => {
