@@ -1,4 +1,9 @@
-import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from './roles.decorator';
 
@@ -24,7 +29,21 @@ export class RolesGuard implements CanActivate {
 
     const { user } = context
       .switchToHttp()
-      .getRequest<{ user: { role: string } }>();
+      .getRequest<{ user?: { role: string } }>();
+
+    // JwtAuthGuard is registered as a global APP_GUARD BEFORE this guard
+    // (see app.module.ts — APP_GUARD guards run in registration order), so
+    // by the time a @Roles route reaches here passport has either set
+    // request.user or already rejected the request with 401. This branch
+    // is defense-in-depth: it can only trip on a wiring mistake (e.g. a
+    // @Roles route also marked @Public(), which skips authentication and
+    // leaves no user to role-check). Throwing 401 — rather than returning
+    // false, which Nest turns into 403 — keeps the "not authenticated at
+    // all" status shape consistent with JwtAuthGuard's own rejections.
+    if (!user) {
+      throw new UnauthorizedException();
+    }
+
     return requiredRoles.includes(user.role);
   }
 }

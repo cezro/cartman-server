@@ -1,8 +1,14 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { wallet_txn_type } from '@prisma/client';
+import { manilaMidnightUtc } from '../common/manila-time';
 
-const CREDIT_TYPES: wallet_txn_type[] = [
+// Sign rule for the append-only ledger: these types add to a rider's net
+// cash, all others subtract. Exported so readers (AdminService's stats and
+// fleet net-cash folds) share ONE definition — a new wallet_txn_type must
+// also update the rider_net_cash() SQL function in
+// cartman-mobile/supabase/migrations.
+export const CREDIT_TYPES: wallet_txn_type[] = [
   'credit_remittance',
   'credit_delivery_reward',
 ];
@@ -61,5 +67,21 @@ export class LedgerService {
       orderBy: { created_at: 'desc' },
       take: 50,
     });
+  }
+
+  // Sum of today's credit_delivery_reward amounts, where "today" is the
+  // Philippines calendar day (Asia/Manila, UTC+8 fixed — no DST). See
+  // manilaMidnightUtc() in src/common/manila-time.ts for the boundary math.
+  async getEarningsToday(riderId: string): Promise<number> {
+    const txns = await this.prisma.rider_wallet_transactions.findMany({
+      where: {
+        rider_id: riderId,
+        type: 'credit_delivery_reward',
+        created_at: { gte: manilaMidnightUtc() },
+      },
+      select: { amount: true },
+    });
+
+    return txns.reduce((sum, t) => sum + Number(t.amount), 0);
   }
 }

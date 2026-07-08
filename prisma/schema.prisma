@@ -5,6 +5,13 @@
 //
 // Money is stored as BigInt centavos (₱99.00 = 9900).
 // Column names match the existing DB exactly.
+//
+// Provisioning order for a fresh database: apply cartman-mobile's
+// supabase/migrations/*.sql FIRST (source of truth — creates things
+// `prisma db push` cannot, like `public.order_ref_seq` and its trigger),
+// then run `prisma db push` second to sync this schema. `prisma/seed.ts`
+// also creates `order_ref_seq` idempotently as a safety net, but the
+// migrations remain the source of truth for it.
 
 generator client {
   provider = "prisma-client-js"
@@ -289,11 +296,13 @@ model device_tokens {
   @@index([user_id])
 }
 
-// ── otp_codes — transactional SMS OTP (C-1.2) ───────────────────────────
+// ── otp_codes — transactional SMS + email OTP (C-1.2) ───────────────────
 
 model otp_codes {
   id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  phone      String
+  phone      String?
+  email      String?
+  channel    String   @default("sms")
   code_hash  String
   user_id    String?  @db.Uuid
   expires_at DateTime @db.Timestamptz()
@@ -305,4 +314,5 @@ model otp_codes {
   profile profiles? @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([phone, created_at(sort: Desc)])
+  @@index([email, created_at(sort: Desc)])
 }

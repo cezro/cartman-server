@@ -57,6 +57,71 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## API reference & authentication
+
+All endpoints (except `GET /health` and the Supabase webhook below, which
+has its own shared-secret header) require a Supabase access token:
+`Authorization: Bearer <supabase_access_token>`, obtained by signing in to
+Supabase Auth (GoTrue) with email + password. Never send tokens in URLs —
+headers only.
+
+Interactive API docs (Swagger) are served at `/api/docs` in development; in
+production they stay off unless `SWAGGER_ENABLED=true`.
+
+The full endpoint reference lives in the docs repo (sibling checkout):
+`cartmanph-docs/docs/api/cartman-server-endpoints.md`.
+
+## Database provisioning order
+
+On a fresh database, apply `cartman-mobile/supabase/migrations/*.sql` first
+(source of truth — creates `public.order_ref_seq` and the `orders.ref_no`
+trigger, which `prisma db push` cannot create), then run `npx prisma db push`
+second to sync `schema.prisma`. `prisma/seed.ts` also creates `order_ref_seq`
+idempotently as a safety net if it's ever missing.
+
+## Supabase Database Webhooks
+
+`POST /webhooks/supabase` (`src/webhooks/webhooks.controller.ts`) receives
+Supabase's Database Webhook payloads for the `orders` table and (today) logs
+what push notification it would send — see "FCM push fan-out" below for the
+exact current behavior.
+
+To wire it up in the Supabase Dashboard:
+
+1. **Settings → API** (or generate your own) — pick a long random secret and
+   set it as `SUPABASE_WEBHOOK_SECRET` in this server's `.env`. There is no
+   fallback default: if this var is unset, the endpoint rejects every request
+   with 401 (see `.env.example`'s comment on the var).
+2. **Database → Webhooks → Create a new hook**:
+   - Table: `orders`
+   - Events: `INSERT` and `UPDATE`
+   - Type: HTTP Request → `POST`
+   - URL: `https://<your-server-host>/webhooks/supabase` (use a tunnel like
+     ngrok for local dev, since Supabase's hosted webhook dispatcher cannot
+     reach `localhost`)
+   - HTTP Headers: add `x-supabase-webhook-secret: <the same value as
+     SUPABASE_WEBHOOK_SECRET>`
+3. Save. Supabase will POST the changed row (plus the previous row, for
+   `UPDATE`) as `{ type, table, record, old_record, schema }` on every insert
+   or update to `orders`.
+
+### FCM push fan-out — current state (C-4.2)
+
+`WebhooksService.handleOrderWebhook` **only logs** what it would send today —
+there is no `device_tokens` lookup, no FCM/firebase-admin SDK call, no
+fan-out to on-duty riders when an order goes to `ready_for_pickup`, and no
+wallet-lockout exclusion. On an `UPDATE` where `record.status !==
+old_record.status`, it logs one line for the customer (`record.customer_id`)
+and, if `record.assigned_rider_id` is set, one line for that rider. Real
+push sending, `device_tokens` fan-out, and the lockout exclusion are still to
+be built.
+
+`FCM_PROJECT_ID` / `FCM_CLIENT_EMAIL` / `FCM_PRIVATE_KEY` (see
+`.env.example`) are optional in Phase 1. If any are missing, the service logs
+a warning and no-ops instead of attempting to send — it never crashes the
+webhook (it always returns `{ success: true }` to Supabase so the dispatcher
+doesn't retry indefinitely).
+
 ## Deployment
 
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.

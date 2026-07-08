@@ -8,8 +8,10 @@ services:
     startCommand: npm run start:prod
     healthCheckPath: /
     autoDeployTrigger: commit
-    # Applies pending Prisma migrations before traffic is switched to the new deploy.
-    preDeployCommand: npx prisma migrate deploy
+    # No migration history yet (pre-launch, schema.prisma is the source of truth) —
+    # pushes the current schema directly before traffic switches to the new deploy.
+    # Switch back to `prisma migrate deploy` once there's a real migration history to preserve.
+    preDeployCommand: npx prisma db push
     envVars:
       - key: NODE_VERSION
         value: 24.13.0
@@ -21,7 +23,7 @@ services:
       # Supabase Postgres — transaction-mode pooler (app runtime queries)
       - key: DATABASE_URL
         sync: false
-      # Supabase Postgres — session-mode pooler (used by `prisma migrate deploy`)
+      # Supabase Postgres — session-mode pooler (used by `prisma db push`)
       - key: DIRECT_URL
         sync: false
 
@@ -38,3 +40,8 @@ services:
         sync: false
       - key: SEMAPHORE_SENDER_NAME
         value: CARTMAN
+
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        value: noreply@cartmanph.com

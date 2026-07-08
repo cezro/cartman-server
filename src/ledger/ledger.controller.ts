@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { wallet_txn_type } from '@prisma/client';
+import { CreateTransactionDto } from './dto/create-transaction.dto';
 
 @Controller('ledger')
 @UseGuards(JwtAuthGuard)
@@ -13,15 +13,7 @@ export class LedgerController {
 
   @Post('transactions')
   @Roles('admin')
-  createManualTransaction(
-    @Body()
-    data: {
-      rider_id: string;
-      type: wallet_txn_type;
-      amount: number;
-      order_id?: string;
-    },
-  ) {
+  createManualTransaction(@Body() data: CreateTransactionDto) {
     return this.ledgerService
       .createManualTransaction(
         data.rider_id,
@@ -52,5 +44,12 @@ export class LedgerController {
         amount: txn.amount.toString(),
       })),
     );
+  }
+
+  @Get('me/earnings-today')
+  @Roles('rider')
+  async getEarningsToday(@CurrentUser() user: AuthenticatedUser) {
+    const earnings_today = await this.ledgerService.getEarningsToday(user.id);
+    return { earnings_today };
   }
 }

@@ -7,10 +7,12 @@ import {
 import { createHash, randomInt } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 
+type OtpChannel = 'sms' | 'email';
+
 /**
  * OTP service — generates, stores, verifies 6-digit codes.
- * Sends SMS via Semaphore (PH-local gateway).
- * Rate limit: max 3 codes per 15 min per phone (C-1.2).
+ * Sends SMS via Semaphore (PH-local gateway) or email via Resend.
+ * Rate limit: max 3 codes per 15 min per identifier (C-1.2).
  */
 @Injectable()
 export class OtpService {
@@ -24,14 +26,75 @@ export class OtpService {
   /**
    * Generate a 6-digit OTP, hash it, store in otp_codes, send via Semaphore.
    */
-  async sendOtp(phone: string, userId?: string): Promise<{ message: string }> {
-    // Rate limit check
+  async sendOtp(
+    phone: string,
+    userId?: string,
+  ): Promise<{ message: string; code?: string }> {
+    const code = await this.generateAndStore(phone, 'sms', userId);
+
+    const devMode = process.env.OTP_DEV_MODE === 'true';
+    if (!devMode) {
+      await this.sendSemaphoreSms(phone, code);
+    }
+
+    return { message: 'OTP sent successfully', ...(devMode ? { code } : {}) };
+  }
+
+  /**
+   * Generate a 6-digit OTP, hash it, store in otp_codes, send via Resend.
+   */
+  async sendEmailOtp(
+    email: string,
+    userId?: string,
+  ): Promise<{ message: string; code?: string }> {
+    const code = await this.generateAndStore(email, 'email', userId);
+
+    const devMode = process.env.OTP_DEV_MODE === 'true';
+    if (!devMode) {
+      await this.sendResendEmail(email, code);
+    }
+
+    return { message: 'OTP sent successfully', ...(devMode ? { code } : {}) };
+  }
+
+  /**
+   * Verify a 6-digit OTP code against stored hash for a phone number.
+   */
+  async verifyOtp(
+    phone: string,
+    code: string,
+    userId?: string,
+  ): Promise<{ verified: boolean }> {
+    return this.verify(phone, 'sms', code, userId);
+  }
+
+  /**
+   * Verify a 6-digit OTP code against stored hash for an email address.
+   */
+  async verifyEmailOtp(
+    email: string,
+    code: string,
+  ): Promise<{ verified: boolean }> {
+    return this.verify(email, 'email', code);
+  }
+
+  /**
+   * Shared rate-limit check + code generation + storage for both channels.
+   */
+  private async generateAndStore(
+    identifier: string,
+    channel: OtpChannel,
+    userId?: string,
+  ): Promise<string> {
     const windowStart = new Date(
       Date.now() - this.RATE_LIMIT_WINDOW_MIN * 60 * 1000,
     );
+    const identifierField = channel === 'sms' ? 'phone' : 'email';
+
     const recentCount = await this.prisma.otp_codes.count({
       where: {
-        phone,
+        [identifierField]: identifier,
+        channel,
         created_at: { gte: windowStart },
       },
     });
@@ -43,48 +106,43 @@ export class OtpService {
       );
     }
 
-    // Generate 6-digit code
     const code = randomInt(100000, 999999).toString();
     const codeHash = createHash('sha256')
-      .update(`${phone}:${code}`)
+      .update(`${identifier}:${code}`)
       .digest('hex');
     const expiresAt = new Date(Date.now() + this.OTP_EXPIRY_MIN * 60 * 1000);
 
-    // Store in DB
     await this.prisma.otp_codes.create({
       data: {
-        phone,
+        [identifierField]: identifier,
+        channel,
         code_hash: codeHash,
         user_id: userId ?? undefined,
         expires_at: expiresAt,
       },
     });
 
-    // Send via Semaphore (or return code in dev mode)
-    const devMode = process.env.OTP_DEV_MODE === 'true';
-
-    if (!devMode) {
-      await this.sendSemaphoreSms(phone, code);
-    }
-
-    return {
-      message: 'OTP sent successfully',
-      ...(devMode ? { code } : {}),
-    };
+    return code;
   }
 
   /**
-   * Verify a 6-digit OTP code against stored hash.
+   * Shared lookup + hash check + consume for both channels.
    */
-  async verifyOtp(phone: string, code: string): Promise<{ verified: boolean }> {
+  private async verify(
+    identifier: string,
+    channel: OtpChannel,
+    code: string,
+    callerUserId?: string,
+  ): Promise<{ verified: boolean }> {
+    const identifierField = channel === 'sms' ? 'phone' : 'email';
     const codeHash = createHash('sha256')
-      .update(`${phone}:${code}`)
+      .update(`${identifier}:${code}`)
       .digest('hex');
 
-    // Find the latest unconsumed OTP for this phone
     const otpRecord = await this.prisma.otp_codes.findFirst({
       where: {
-        phone,
+        [identifierField]: identifier,
+        channel,
         consumed: false,
         expires_at: { gte: new Date() },
       },
@@ -95,14 +153,20 @@ export class OtpService {
       throw new BadRequestException('No valid OTP found. Request a new one.');
     }
 
-    // Check max attempts
+    if (
+      callerUserId &&
+      otpRecord.user_id &&
+      otpRecord.user_id !== callerUserId
+    ) {
+      throw new BadRequestException('OTP does not belong to this user');
+    }
+
     if (otpRecord.attempts >= this.MAX_ATTEMPTS) {
       throw new BadRequestException(
         'Too many failed attempts. Request a new OTP.',
       );
     }
 
-    // Increment attempt counter
     await this.prisma.otp_codes.update({
       where: { id: otpRecord.id },
       data: { attempts: { increment: 1 } },
@@ -112,17 +176,21 @@ export class OtpService {
       throw new BadRequestException('Invalid OTP code.');
     }
 
-    // Mark as consumed
     await this.prisma.otp_codes.update({
       where: { id: otpRecord.id },
       data: { consumed: true },
     });
 
-    // Set phone_verified on the user's profile
-    if (otpRecord.user_id) {
+    // Only the SMS channel maps onto a profile update: `profiles` has a
+    // `phone`/`phone_verified` column pair but no `email` column, so doing
+    // this unconditionally for the email channel would both (a) incorrectly
+    // flip phone_verified based on an email code and (b) throw a Prisma
+    // error writing a nonexistent `profiles.email` column.
+    const targetUserId = callerUserId ?? otpRecord.user_id;
+    if (targetUserId && channel === 'sms') {
       await this.prisma.profiles.update({
-        where: { id: otpRecord.user_id },
-        data: { phone_verified: true, phone },
+        where: { id: targetUserId },
+        data: { phone_verified: true, phone: identifier },
       });
     }
 
@@ -156,6 +224,41 @@ export class OtpService {
 
     if (!response.ok) {
       console.error('Semaphore SMS failed:', await response.text());
+      throw new HttpException(
+        'SMS send failed — try again',
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  /**
+   * Send email via Resend API.
+   */
+  private async sendResendEmail(email: string, code: string): Promise<void> {
+    const apiKey = process.env.RESEND_API_KEY;
+    const fromEmail = process.env.RESEND_FROM_EMAIL;
+
+    if (!apiKey) {
+      console.warn('RESEND_API_KEY not set — skipping email send');
+      return;
+    }
+
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: fromEmail,
+        to: email,
+        subject: 'Your Cartman verification code',
+        html: `Your Cartman verification code is: ${code}. Valid for 10 minutes.`,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('Resend email failed:', await response.text());
     }
   }
 }

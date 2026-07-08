@@ -8,4 +8,8 @@ export default defineConfig({
     // Migrations need a direct (non-pgbouncer) connection — use the session-mode pooler.
     url: env('DIRECT_URL'),
   },
+  migrations: {
+    // Prisma 7 reads the seed command from here, not package.json#prisma.seed.
+    seed: 'ts-node prisma/seed.ts',
+  },
 });
