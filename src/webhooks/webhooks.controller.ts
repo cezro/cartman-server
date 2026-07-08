@@ -7,8 +7,13 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { WebhooksService } from './webhooks.service';
+import { Public } from '../auth/public.decorator';
 
+// @Public(): Supabase's webhook sender cannot mint user JWTs — this
+// endpoint authenticates with its own shared-secret header instead (see
+// the SUPABASE_WEBHOOK_SECRET check below).
 @Controller('webhooks')
+@Public()
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 

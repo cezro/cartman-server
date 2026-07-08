@@ -31,14 +31,15 @@ export class RolesGuard implements CanActivate {
       .switchToHttp()
       .getRequest<{ user?: { role: string } }>();
 
-    // RolesGuard is registered globally (APP_GUARD) but JwtAuthGuard is only
-    // applied per-controller via @UseGuards() — global guards run before
-    // controller-level ones, so on an unauthenticated request `user` is not
-    // set yet here. Without this check that read as a crash (500, "Cannot
-    // read properties of undefined") instead of the 401 an unauthenticated
-    // request should get. Returning `false` would produce Nest's default
-    // 403 Forbidden, which is the wrong status for "not authenticated at
-    // all" — throw 401 explicitly so the two guards agree on one shape.
+    // JwtAuthGuard is registered as a global APP_GUARD BEFORE this guard
+    // (see app.module.ts — APP_GUARD guards run in registration order), so
+    // by the time a @Roles route reaches here passport has either set
+    // request.user or already rejected the request with 401. This branch
+    // is defense-in-depth: it can only trip on a wiring mistake (e.g. a
+    // @Roles route also marked @Public(), which skips authentication and
+    // leaves no user to role-check). Throwing 401 — rather than returning
+    // false, which Nest turns into 403 — keeps the "not authenticated at
+    // all" status shape consistent with JwtAuthGuard's own rejections.
     if (!user) {
       throw new UnauthorizedException();
     }

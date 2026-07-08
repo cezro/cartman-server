@@ -17,6 +17,7 @@ import {
   VerifyEmailOtpDto,
 } from './dto/otp.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { Public } from './public.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from './jwt.strategy';
 import { PrismaService } from '../prisma/prisma.service';
@@ -70,7 +71,10 @@ export class AuthController {
    * Send a 6-digit OTP to an email address.
    * Rate limited: max 3 per 15 min per email.
    */
+  // @Public(): dormant endpoint (email verification is deferred scope) —
+  // preserves its pre-global-guard unauthenticated contract.
   @Post('send-email-otp')
+  @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Send OTP to email address (C-1.2)' })
   async sendEmailOtp(@Body() dto: SendEmailOtpDto) {
@@ -80,7 +84,9 @@ export class AuthController {
   /**
    * Verify a 6-digit email OTP code.
    */
+  // @Public(): dormant endpoint — see sendEmailOtp note above.
   @Post('verify-email-otp')
+  @Public()
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify email OTP code (C-1.2)' })
   async verifyEmailOtp(@Body() dto: VerifyEmailOtpDto) {

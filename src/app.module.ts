@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
+import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
 import { ProfilesModule } from './profiles/profiles.module';
 import { MerchantsModule } from './merchants/merchants.module';
@@ -41,6 +42,13 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
   providers: [
     AppService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
+    // Order matters: APP_GUARD guards run in registration order, and
+    // RolesGuard reads request.user, which JwtAuthGuard (passport) sets.
+    // With RolesGuard global but JwtAuthGuard controller-level only (the
+    // previous wiring), the global RolesGuard ran BEFORE any controller
+    // guard and rejected every @Roles route with 401 even for valid
+    // tokens. Public routes opt out via @Public() (public.decorator.ts).
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
