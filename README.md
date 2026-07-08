@@ -57,6 +57,20 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
+## API reference & authentication
+
+All endpoints (except `GET /health` and the Supabase webhook below, which
+has its own shared-secret header) require a Supabase access token:
+`Authorization: Bearer <supabase_access_token>`, obtained by signing in to
+Supabase Auth (GoTrue) with email + password. Never send tokens in URLs —
+headers only.
+
+Interactive API docs (Swagger) are served at `/api/docs` in development; in
+production they stay off unless `SWAGGER_ENABLED=true`.
+
+The full endpoint reference lives in the docs repo (sibling checkout):
+`cartmanph-docs/docs/api/cartman-server-endpoints.md`.
+
 ## Database provisioning order
 
 On a fresh database, apply `cartman-mobile/supabase/migrations/*.sql` first
