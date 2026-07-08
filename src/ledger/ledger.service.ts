@@ -3,7 +3,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { wallet_txn_type } from '@prisma/client';
 import { manilaMidnightUtc } from '../common/manila-time';
 
-const CREDIT_TYPES: wallet_txn_type[] = [
+// Sign rule for the append-only ledger: these types add to a rider's net
+// cash, all others subtract. Exported so readers (AdminService's stats and
+// fleet net-cash folds) share ONE definition — a new wallet_txn_type must
+// also update the rider_net_cash() SQL function in
+// cartman-mobile/supabase/migrations.
+export const CREDIT_TYPES: wallet_txn_type[] = [
   'credit_remittance',
   'credit_delivery_reward',
 ];

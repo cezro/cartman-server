@@ -13,7 +13,7 @@ import {
   AdminMerchantsQueryDto,
   AdminLedgerQueryDto,
 } from './dto/admin.dto';
-import { LedgerService } from '../ledger/ledger.service';
+import { LedgerService, CREDIT_TYPES } from '../ledger/ledger.service';
 import {
   ACTIVE_RIDER_STATUSES,
   MAX_ACTIVE_ORDERS_PER_RIDER,
@@ -45,14 +45,8 @@ const NON_TERMINAL_ORDER_STATUSES: order_status[] = Object.values(
   order_status,
 ).filter((s) => s !== order_status.delivered && s !== order_status.canceled);
 
-// Mirrors LedgerService's private CREDIT_TYPES (src/ledger/ledger.service.ts)
-// — duplicated rather than imported/exported so this module stays a pure
-// reader of the ledger, same precedent as OrdersService.WALLET_LOCK_FLOOR
-// mirroring LedgerService's LOCK_FLOOR. Keep these two lists in sync.
-const CREDIT_TYPES: wallet_txn_type[] = [
-  'credit_remittance',
-  'credit_delivery_reward',
-];
+// Ledger sign rule imported from LedgerService — one definition; see the
+// export comment there for the SQL-function sync requirement.
 
 @Injectable()
 export class AdminService {
