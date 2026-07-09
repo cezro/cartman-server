@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserOrIpThrottlerGuard } from './common/user-or-ip-throttler.guard';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
@@ -22,11 +23,16 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    // Global defense-in-depth rate limit — generous default (100 req/min
-    // per IP); the OTP endpoints layer a much stricter per-route override
-    // on top via @Throttle() (see auth.controller.ts), in addition to
-    // OtpService's own per-identifier DB-backed rate limit.
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
+    // Global defense-in-depth rate limit: 200 req/min per user (or per IP on
+    // @Public routes) — see UserOrIpThrottlerGuard for why the key is the
+    // user id, not the IP. 200/min sits comfortably above the busiest real
+    // client (an on-duty rider whose feed refetches on every realtime change,
+    // debounced 500ms ≈ up to ~120/min in a hot dispatch window) while still
+    // capping a runaway or compromised client. The OTP endpoints layer a much
+    // stricter per-route override on top via @Throttle() (see
+    // auth.controller.ts), plus OtpService's own per-phone DB-backed limit;
+    // the Supabase webhook opts out entirely via @SkipThrottle().
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 200 }]),
     PrismaModule,
     AuthModule,
     ProfilesModule,
@@ -41,14 +47,18 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
   controllers: [AppController],
   providers: [
     AppService,
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
-    // Order matters: APP_GUARD guards run in registration order, and
-    // RolesGuard reads request.user, which JwtAuthGuard (passport) sets.
-    // With RolesGuard global but JwtAuthGuard controller-level only (the
-    // previous wiring), the global RolesGuard ran BEFORE any controller
-    // guard and rejected every @Roles route with 401 even for valid
-    // tokens. Public routes opt out via @Public() (public.decorator.ts).
+    // Order matters: APP_GUARD guards run in registration order.
+    // 1. JwtAuthGuard (passport) first — it populates request.user, which
+    //    both of the next two guards read. Public routes opt out via
+    //    @Public() (public.decorator.ts). (Before the guard-topology fix,
+    //    RolesGuard ran before any auth guard and rejected every @Roles
+    //    route with 401 even for valid tokens.)
+    // 2. UserOrIpThrottlerGuard next — it keys the rate-limit bucket on
+    //    request.user.id (set in step 1), falling back to IP on @Public
+    //    routes. It must run AFTER JwtAuthGuard for that key to exist.
+    // 3. RolesGuard last — reads request.user.role.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useClass: UserOrIpThrottlerGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_INTERCEPTOR, useClass: LoggingInterceptor },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

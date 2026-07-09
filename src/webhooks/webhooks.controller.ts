@@ -6,14 +6,20 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { WebhooksService } from './webhooks.service';
 import { Public } from '../auth/public.decorator';
 
 // @Public(): Supabase's webhook sender cannot mint user JWTs — this
 // endpoint authenticates with its own shared-secret header instead (see
 // the SUPABASE_WEBHOOK_SECRET check below).
+// @SkipThrottle(): the sender is a single Supabase egress IP and order-status
+// changes arrive in bursts; an IP-keyed rate limit would 429 legitimate
+// fan-out traffic and silently drop notifications. The shared-secret check
+// is the abuse control here, not throttling.
 @Controller('webhooks')
 @Public()
+@SkipThrottle()
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
