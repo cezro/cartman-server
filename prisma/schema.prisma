@@ -66,11 +66,14 @@ model profiles {
   full_name       String   @default("")
   phone           String?  @unique
   phone_verified  Boolean  @default(false)
-  role            String   @default("customer")
+  role            String   @default("customer") // 'customer' | 'rider' | 'merchant'
   avatar_url      String?
   membership_tier String   @default("Bronze")
   cart_points     BigInt   @default(0)
   wallet_centavos BigInt   @default(0)
+  // Admin Dashboard V2 ban/unban flag (POST /admin/users/:id/toggle-status,
+  // /bypass-auth). Distinct from riders.is_active, which is duty on/off.
+  suspended       Boolean  @default(false)
   created_at      DateTime @default(now()) @db.Timestamptz()
 
   // Relations
@@ -80,6 +83,7 @@ model profiles {
   rider                    riders?
   device_tokens            device_tokens[]
   otp_codes                otp_codes[]
+  merchant_users           merchant_users[]
 }
 
 // ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
@@ -103,21 +107,25 @@ model addresses {
 // ── merchants + menu ────────────────────────────────────────────────────
 
 model merchants {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name         String
-  category     String   @default("")
-  rating       Decimal  @default(0)
-  delivery_fee BigInt   @default(0)
-  min_order    BigInt   @default(0)
-  eta_minutes  Int      @default(0)
-  is_open      Boolean  @default(true)
-  image_url    String?
-  promo_text   String?
-  created_at   DateTime @default(now()) @db.Timestamptz()
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String
+  category        String   @default("")
+  rating          Decimal  @default(0)
+  delivery_fee    BigInt   @default(0)
+  min_order       BigInt   @default(0)
+  eta_minutes     Int      @default(0)
+  is_open         Boolean  @default(true)
+  image_url       String?
+  promo_text      String?
+  // Weekly windows: [{"day":0-6,"open":"HH:MM","close":"HH:MM"}, …].
+  // Informational in Phase 1 — is_open is still the single availability flag.
+  operating_hours Json     @default("[]")
+  created_at      DateTime @default(now()) @db.Timestamptz()
 
   // Relations
-  menu_items menu_items[]
-  orders     orders[]
+  menu_items     menu_items[]
+  orders         orders[]
+  merchant_users merchant_users[]
 }
 
 model menu_items {
@@ -172,6 +180,10 @@ model orders {
   rider_notes     String?
   recipient_name  String?
   recipient_phone String?
+
+  // Cancellation — set by merchant_reject_order / customer / admin
+  canceled_reason String?
+  canceled_by     String? // 'merchant' | 'customer' | 'admin'
 
   created_at DateTime @default(now()) @db.Timestamptz()
   updated_at DateTime @default(now()) @db.Timestamptz()
@@ -229,16 +241,19 @@ model order_stops {
 // ── riders — rider state (R-4.2) ────────────────────────────────────────
 
 model riders {
-  id               String   @id @db.Uuid
-  is_active        Boolean  @default(false)
-  vehicle          String   @default("")
-  plate_no         String   @default("")
-  rating           Decimal  @default(5.0)
-  acceptance_rate  Decimal  @default(1.0)
-  total_trips      Int      @default(0)
-  broadcast_count  Int      @default(0)
-  avg_duration_secs Int     @default(0)
-  updated_at       DateTime @default(now()) @db.Timestamptz()
+  id                String   @id @db.Uuid
+  is_active         Boolean  @default(false)
+  vehicle           String   @default("")
+  plate_no          String   @default("")
+  rating            Decimal  @default(5.0)
+  acceptance_rate   Decimal  @default(1.0)
+  total_trips       Int      @default(0)
+  broadcast_count   Int      @default(0)
+  avg_duration_secs Int      @default(0)
+  // Set true by POST /admin/verifications/:id/approve when the approved
+  // verification's user has a riders row (COD ID / permit check).
+  is_verified       Boolean  @default(false)
+  updated_at        DateTime @default(now()) @db.Timestamptz()
 
   // Relations
   profile              profiles                    @relation(fields: [id], references: [id], onDelete: Cascade)
@@ -315,4 +330,81 @@ model otp_codes {
 
   @@index([phone, created_at(sort: Desc)])
   @@index([email, created_at(sort: Desc)])
+}
+
+// ── merchant_users — Merchant Panel identity (20260707000100_merchant_panel.sql) ─
+// Links auth users to the stores they manage. RLS policies on orders,
+// order_items, merchants, and menu_items reference this table — do NOT
+// remove it from schema.prisma or prisma db push will try to drop it,
+// breaking those policies.
+
+model merchant_users {
+  merchant_id String      @db.Uuid
+  user_id     String      @db.Uuid
+  created_at  DateTime    @default(now()) @db.Timestamptz()
+
+  // Relations
+  merchant merchants @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+  profile  profiles  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@id([merchant_id, user_id])
+  @@index([user_id])
+}
+
+// ── Admin Dashboard V2 — admin/server-only tables ────────────────────────
+// RLS is enabled on all four with NO policies (see the migration): the
+// server writes to them via its own DB connection (DIRECT_URL /
+// DATABASE_URL), same posture as other write-only tables. Mobile apps never
+// read these directly.
+
+// ── incidents — operational issue / system alert log ────────────────────
+
+model incidents {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type          String
+  severity      String
+  status        String   @default("Open") // Enum: Open, Investigating, Resolved
+  related_order String?
+  assignee      String?
+  reported_at   DateTime @default(now()) @db.Timestamptz()
+}
+
+// ── verifications — COD ID / Merchant Business Permit review queue ──────
+
+model verifications {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id       String   @db.Uuid
+  document_type String
+  document_url  String
+  status        String   @default("Pending") // Enum: Pending, Approved, Rejected
+  submitted_at  DateTime @default(now()) @db.Timestamptz()
+}
+
+// ── tickets — multi-channel support requests ─────────────────────────────
+
+model tickets {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  category   String // General, Dispute, Technical, Billing
+  subject    String
+  priority   String   @default("Low") // Low, Medium, High
+  status     String   @default("Open") // Open, In Progress, Closed
+  created_at DateTime @default(now()) @db.Timestamptz()
+}
+
+// ── global_config — dynamic business logic variables (singleton row) ────
+// Store-and-serve only in Phase 1 — NOT wired into live delivery-fee /
+// commission calculation (out of scope for Admin Dashboard V2; see
+// AdminConfigService for the same note at the call site).
+
+model global_config {
+  id                      Int      @id @default(1) // Singleton
+  base_rate               Decimal  @default(39.0)
+  base_radius             Decimal  @default(2.0)
+  surcharge_per_km        Decimal  @default(15.0)
+  strike_limit            Int      @default(3)
+  auto_assign             Boolean  @default(true)
+  pro_exposure_multiplier Decimal  @default(2.0)
+  allow_ads               Boolean  @default(true)
+  updated_at              DateTime @default(now()) @updatedAt @db.Timestamptz()
 }
