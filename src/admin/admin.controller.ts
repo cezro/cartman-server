@@ -12,6 +12,8 @@ import { AdminService } from './admin.service';
 import { AdminIncidentsService } from './admin-incidents.service';
 import { AdminConfigService } from './admin-config.service';
 import { AdminUsersService } from './admin-users.service';
+import { AdminVerificationsService } from './admin-verifications.service';
+import { AdminTicketsService } from './admin-tickets.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -25,6 +27,9 @@ import {
   UpdateIncidentStatusDto,
   UpdateConfigDto,
   AdminUsersQueryDto,
+  AdminVerificationsQueryDto,
+  AdminTicketsQueryDto,
+  UpdateTicketStatusDto,
 } from './dto/admin.dto';
 
 // Single admin surface for the Next.js admin dashboard prototype. Every
@@ -40,6 +45,8 @@ export class AdminController {
     private readonly incidentsService: AdminIncidentsService,
     private readonly configService: AdminConfigService,
     private readonly usersService: AdminUsersService,
+    private readonly verificationsService: AdminVerificationsService,
+    private readonly ticketsService: AdminTicketsService,
   ) {}
 
   @Get('stats')
@@ -134,5 +141,37 @@ export class AdminController {
   @Post('users/:id/toggle-status')
   toggleStatus(@Param('id') id: string) {
     return this.usersService.toggleStatus(id);
+  }
+
+  // ══ Admin Dashboard V2 — verification pipeline ══════════════════════════
+
+  @Get('verifications')
+  getVerifications(@Query() query: AdminVerificationsQueryDto) {
+    return this.verificationsService.list(query);
+  }
+
+  @Post('verifications/:id/approve')
+  approveVerification(@Param('id') id: string) {
+    return this.verificationsService.approve(id);
+  }
+
+  @Post('verifications/:id/reject')
+  rejectVerification(@Param('id') id: string) {
+    return this.verificationsService.reject(id);
+  }
+
+  // ══ Admin Dashboard V2 — support tickets ════════════════════════════════
+
+  @Get('tickets')
+  getTickets(@Query() query: AdminTicketsQueryDto) {
+    return this.ticketsService.list(query);
+  }
+
+  @Patch('tickets/:id/status')
+  updateTicketStatus(
+    @Param('id') id: string,
+    @Body() body: UpdateTicketStatusDto,
+  ) {
+    return this.ticketsService.updateStatus(id, body);
   }
 }

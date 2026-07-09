@@ -3,6 +3,8 @@ import { AdminService } from './admin.service';
 import { AdminIncidentsService } from './admin-incidents.service';
 import { AdminConfigService } from './admin-config.service';
 import { AdminUsersService } from './admin-users.service';
+import { AdminVerificationsService } from './admin-verifications.service';
+import { AdminTicketsService } from './admin-tickets.service';
 import { AdminController } from './admin.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { LedgerModule } from '../ledger/ledger.module';
@@ -16,6 +18,8 @@ import { SupabaseAdminService } from '../common/supabase-admin.service';
     AdminIncidentsService,
     AdminConfigService,
     AdminUsersService,
+    AdminVerificationsService,
+    AdminTicketsService,
     SupabaseAdminService,
   ],
 })
