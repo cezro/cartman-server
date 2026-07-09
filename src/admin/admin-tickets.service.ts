@@ -1,9 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  AdminTicketsQueryDto,
-  UpdateTicketStatusDto,
-} from './dto/admin.dto';
+import { AdminTicketsQueryDto, UpdateTicketStatusDto } from './dto/admin.dto';
 
 /**
  * Admin Dashboard V2 — multi-channel support tickets.

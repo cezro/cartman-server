@@ -41,13 +41,20 @@ describe('AdminTicketsService', () => {
 
       const res = await service.list(query({ status: 'In Progress' }));
 
-      const call = prisma.tickets.findMany.mock.calls[0][0] as {
+      const call = (
+        prisma.tickets.findMany.mock.calls as unknown[][]
+      )[0][0] as {
         where: Record<string, unknown>;
         orderBy: Record<string, string>;
       };
       expect(call.where).toEqual({ status: 'In Progress' });
       expect(call.orderBy).toEqual({ created_at: 'desc' });
-      expect(res).toEqual({ items: [{ id: 't1' }], total: 1, limit: 20, offset: 0 });
+      expect(res).toEqual({
+        items: [{ id: 't1' }],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      });
     });
   });
 

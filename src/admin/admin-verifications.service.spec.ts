@@ -53,13 +53,20 @@ describe('AdminVerificationsService', () => {
 
       const res = await service.list(query({ status: 'Pending' }));
 
-      const call = prisma.verifications.findMany.mock.calls[0][0] as {
+      const call = (
+        prisma.verifications.findMany.mock.calls as unknown[][]
+      )[0][0] as {
         where: Record<string, unknown>;
         orderBy: Record<string, string>;
       };
       expect(call.where).toEqual({ status: 'Pending' });
       expect(call.orderBy).toEqual({ submitted_at: 'desc' });
-      expect(res).toEqual({ items: [{ id: 'v1' }], total: 1, limit: 20, offset: 0 });
+      expect(res).toEqual({
+        items: [{ id: 'v1' }],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      });
     });
   });
 
@@ -69,7 +76,10 @@ describe('AdminVerificationsService', () => {
         id: 'v1',
         user_id: 'u1',
       });
-      tx.verifications.update.mockResolvedValue({ id: 'v1', status: 'Approved' });
+      tx.verifications.update.mockResolvedValue({
+        id: 'v1',
+        status: 'Approved',
+      });
       tx.riders.updateMany.mockResolvedValue({ count: 1 });
 
       const res = await service.approve('v1');

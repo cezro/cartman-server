@@ -46,8 +46,15 @@ describe('AdminIncidentsService', () => {
 
       const res = await service.list(query({ limit: 10, offset: 5 }));
 
-      expect(res).toEqual({ items: [{ id: 'i1' }], total: 1, limit: 10, offset: 5 });
-      const call = prisma.incidents.findMany.mock.calls[0][0] as {
+      expect(res).toEqual({
+        items: [{ id: 'i1' }],
+        total: 1,
+        limit: 10,
+        offset: 5,
+      });
+      const call = (
+        prisma.incidents.findMany.mock.calls as unknown[][]
+      )[0][0] as {
         orderBy: Record<string, string>;
         take: number;
         skip: number;
@@ -70,10 +77,11 @@ describe('AdminIncidentsService', () => {
 
       await service.create(body);
 
-      const data = prisma.incidents.create.mock.calls[0][0].data as Record<
-        string,
-        unknown
-      >;
+      const data = (
+        (prisma.incidents.create.mock.calls as unknown[][])[0][0] as {
+          data: Record<string, unknown>;
+        }
+      ).data;
       expect(data).toEqual({
         type: 'payment',
         severity: 'high',

@@ -111,9 +111,10 @@ describe('AdminModule V2 (e2e)', () => {
       .set('Authorization', `Bearer ${signBearerFor('admin-1')}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.id).toBe(1);
-    expect(res.body.base_rate).toBe(39);
-    expect(typeof res.body.base_rate).toBe('number');
+    const body = res.body as { id: number; base_rate: number };
+    expect(body.id).toBe(1);
+    expect(body.base_rate).toBe(39);
+    expect(typeof body.base_rate).toBe('number');
   });
 
   it('GET /admin/incidents with an admin token returns the envelope', async () => {
@@ -163,6 +164,7 @@ describe('AdminModule V2 (e2e)', () => {
       .set('Authorization', `Bearer ${signBearerFor('admin-1')}`);
 
     expect(res.status).toBe(201);
-    expect(res.body.action_link).toBe('https://recover.link/abc123');
+    const body = res.body as { action_link: string };
+    expect(body.action_link).toBe('https://recover.link/abc123');
   });
 });

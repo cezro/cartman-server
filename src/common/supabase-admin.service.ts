@@ -1,9 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  createClient,
-  type SupabaseClient,
-  type User,
-} from '@supabase/supabase-js';
+import { createClient, type User } from '@supabase/supabase-js';
 
 /**
  * Thin injectable wrapper over the Supabase service-role admin API
@@ -18,7 +14,7 @@ import {
  */
 @Injectable()
 export class SupabaseAdminService {
-  private readonly client: SupabaseClient;
+  private readonly client: ReturnType<typeof createClient>;
 
   constructor() {
     this.client = createClient(
@@ -32,22 +28,23 @@ export class SupabaseAdminService {
   updateUserById(
     id: string,
     attributes: { ban_duration?: string },
-  ): Promise<{ data: { user: User | null }; error: { message: string } | null }> {
+  ): Promise<{
+    data: { user: User | null };
+    error: { message: string } | null;
+  }> {
     return this.client.auth.admin.updateUserById(id, attributes);
   }
 
   /** Fetches an auth user (for their email) by id. */
-  getUserById(
-    id: string,
-  ): Promise<{ data: { user: User | null }; error: { message: string } | null }> {
+  getUserById(id: string): Promise<{
+    data: { user: User | null };
+    error: { message: string } | null;
+  }> {
     return this.client.auth.admin.getUserById(id);
   }
 
   /** Generates a password-recovery action link for the given email. */
-  generateLink(params: {
-    type: 'recovery';
-    email: string;
-  }): Promise<{
+  generateLink(params: { type: 'recovery'; email: string }): Promise<{
     data: { properties: { action_link: string } | null };
     error: { message: string } | null;
   }> {

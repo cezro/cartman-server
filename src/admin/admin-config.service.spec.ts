@@ -53,7 +53,9 @@ describe('AdminConfigService', () => {
 
       const res = await service.get();
 
-      expect(prisma.global_config.create.mock.calls[0][0]).toEqual({
+      expect(
+        (prisma.global_config.create.mock.calls as unknown[][])[0][0],
+      ).toEqual({
         data: { id: 1 },
       });
       expect(res.id).toBe(1);
@@ -77,7 +79,9 @@ describe('AdminConfigService', () => {
 
       const res = await service.update(body);
 
-      const call = prisma.global_config.upsert.mock.calls[0][0] as {
+      const call = (
+        prisma.global_config.upsert.mock.calls as unknown[][]
+      )[0][0] as {
         where: { id: number };
         create: Record<string, unknown>;
         update: Record<string, unknown>;
@@ -108,7 +112,9 @@ describe('AdminConfigService', () => {
 
       await service.update({});
 
-      const call = prisma.global_config.upsert.mock.calls[0][0] as {
+      const call = (
+        prisma.global_config.upsert.mock.calls as unknown[][]
+      )[0][0] as {
         update: Record<string, unknown>;
         create: Record<string, unknown>;
       };

@@ -81,7 +81,12 @@ describe('AdminUsersService', () => {
 
       const res = await service.list(query({ role: 'rider' }));
 
-      expect(prisma.profiles.findMany.mock.calls[0][0].where).toEqual({
+      const listCall = (
+        prisma.profiles.findMany.mock.calls as unknown[][]
+      )[0][0] as {
+        where: Record<string, unknown>;
+      };
+      expect(listCall.where).toEqual({
         role: 'rider',
       });
       const customer = res.items[0] as Record<string, unknown>;
@@ -98,8 +103,16 @@ describe('AdminUsersService', () => {
 
     it('batches net-cash in one groupBy (no per-rider query)', async () => {
       prisma.profiles.findMany.mockResolvedValue([
-        { id: 'r1', role: 'rider', rider: { is_active: true, is_verified: true } },
-        { id: 'r2', role: 'rider', rider: { is_active: false, is_verified: true } },
+        {
+          id: 'r1',
+          role: 'rider',
+          rider: { is_active: true, is_verified: true },
+        },
+        {
+          id: 'r2',
+          role: 'rider',
+          rider: { is_active: false, is_verified: true },
+        },
       ]);
       prisma.profiles.count.mockResolvedValue(2);
 

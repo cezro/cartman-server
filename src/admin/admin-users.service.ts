@@ -123,7 +123,9 @@ export class AdminUsersService {
     }
     const email = data.user.email;
     if (!email) {
-      throw new BadRequestException('User has no email to send a reset link to');
+      throw new BadRequestException(
+        'User has no email to send a reset link to',
+      );
     }
 
     const link = await this.supabaseAdmin.generateLink({
