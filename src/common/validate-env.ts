@@ -16,8 +16,8 @@ import Joi from 'joi';
  *  - SUPABASE_WEBHOOK_SECRET — otherwise WebhooksController silently 401s
  *    every Supabase webhook forever (see webhooks.controller.ts).
  *  - CORS_ORIGINS — main.ts refuses to fall back to "allow all" in prod.
- *  - SEMAPHORE_API_KEY — unless OTP_DEV_MODE=true, in which case OtpService
- *    never calls Semaphore (see otp.service.ts sendOtp/sendEmailOtp).
+ *  - SEMAPHORE_API_KEY — optional for now (SMS OTP is a future integration).
+ *  - RESEND_API_KEY — optional for now (email OTP is a future integration).
  */
 export function validateEnv(
   env: Record<string, string | undefined> = process.env,
@@ -40,10 +40,8 @@ export function validateEnv(
     CORS_ORIGINS: isProduction
       ? Joi.string().required()
       : Joi.string().optional().allow(''),
-    SEMAPHORE_API_KEY:
-      isProduction && !otpDevMode
-        ? Joi.string().required()
-        : Joi.string().optional().allow(''),
+    SEMAPHORE_API_KEY: Joi.string().optional().allow(''),
+    RESEND_API_KEY: Joi.string().optional().allow(''),
   }).unknown(true);
 
   const { error } = schema.validate(env, { abortEarly: false });
