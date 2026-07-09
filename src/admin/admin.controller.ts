@@ -11,6 +11,7 @@ import {
 import { AdminService } from './admin.service';
 import { AdminIncidentsService } from './admin-incidents.service';
 import { AdminConfigService } from './admin-config.service';
+import { AdminUsersService } from './admin-users.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -23,6 +24,7 @@ import {
   CreateIncidentDto,
   UpdateIncidentStatusDto,
   UpdateConfigDto,
+  AdminUsersQueryDto,
 } from './dto/admin.dto';
 
 // Single admin surface for the Next.js admin dashboard prototype. Every
@@ -37,6 +39,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly incidentsService: AdminIncidentsService,
     private readonly configService: AdminConfigService,
+    private readonly usersService: AdminUsersService,
   ) {}
 
   @Get('stats')
@@ -109,5 +112,27 @@ export class AdminController {
   @Post('config')
   updateConfig(@Body() body: UpdateConfigDto) {
     return this.configService.update(body);
+  }
+
+  // ══ Admin Dashboard V2 — users + auth overrides ═════════════════════════
+
+  @Get('users')
+  getUsers(@Query() query: AdminUsersQueryDto) {
+    return this.usersService.list(query);
+  }
+
+  @Post('users/:id/bypass-auth')
+  bypassAuth(@Param('id') id: string) {
+    return this.usersService.bypassAuth(id);
+  }
+
+  @Post('users/:id/reset-2fa')
+  reset2fa(@Param('id') id: string) {
+    return this.usersService.reset2fa(id);
+  }
+
+  @Post('users/:id/toggle-status')
+  toggleStatus(@Param('id') id: string) {
+    return this.usersService.toggleStatus(id);
   }
 }
