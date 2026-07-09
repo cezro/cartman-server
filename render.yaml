@@ -3,7 +3,7 @@ services:
     type: web
     runtime: node
     region: singapore # closest Render region to the Supabase ap-northeast-1 project
-    plan: starter
+    plan: standard
     buildCommand: npm ci && npm run build
     startCommand: npm run start:prod
     healthCheckPath: /
