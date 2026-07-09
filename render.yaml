@@ -11,7 +11,7 @@ services:
     # No migration history yet (pre-launch, schema.prisma is the source of truth) —
     # pushes the current schema directly before traffic switches to the new deploy.
     # Switch back to `prisma migrate deploy` once there's a real migration history to preserve.
-    preDeployCommand: npx prisma db push
+    preDeployCommand: npx prisma db push --accept-data-loss
     envVars:
       - key: NODE_VERSION
         value: 24.13.0
