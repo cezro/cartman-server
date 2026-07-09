@@ -21,6 +21,8 @@ services:
         value: production
       - key: PORT
         value: 3000
+      - key: CORS_ORIGINS
+        sync: false
 
       # Supabase Postgres — transaction-mode pooler (app runtime queries)
       - key: DATABASE_URL
