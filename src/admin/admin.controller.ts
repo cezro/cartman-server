@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AdminIncidentsService } from './admin-incidents.service';
+import { AdminConfigService } from './admin-config.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
@@ -21,6 +22,7 @@ import {
   AdminLedgerQueryDto,
   CreateIncidentDto,
   UpdateIncidentStatusDto,
+  UpdateConfigDto,
 } from './dto/admin.dto';
 
 // Single admin surface for the Next.js admin dashboard prototype. Every
@@ -34,6 +36,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly incidentsService: AdminIncidentsService,
+    private readonly configService: AdminConfigService,
   ) {}
 
   @Get('stats')
@@ -94,5 +97,17 @@ export class AdminController {
     @Body() body: UpdateIncidentStatusDto,
   ) {
     return this.incidentsService.updateStatus(id, body);
+  }
+
+  // ══ Admin Dashboard V2 — global config (singleton) ══════════════════════
+
+  @Get('config')
+  getConfig() {
+    return this.configService.get();
+  }
+
+  @Post('config')
+  updateConfig(@Body() body: UpdateConfigDto) {
+    return this.configService.update(body);
   }
 }

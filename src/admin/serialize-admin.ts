@@ -61,3 +61,27 @@ export function serializeAdminLedgerTxn<T extends Record<string, any>>(
   if (typeof out.amount === 'bigint') out.amount = out.amount.toString();
   return out as T;
 }
+
+/**
+ * Serializes the global_config singleton for GET/POST /admin/config.
+ * Converts the Prisma Decimal columns (base_rate, base_radius,
+ * surcharge_per_km, pro_exposure_multiplier) to Number — Decimal, like
+ * BigInt, is not JSON-serializable by Nest's default serializer. The Int and
+ * Boolean columns and the updated_at timestamp pass through unchanged.
+ */
+export function serializeGlobalConfig<T extends Record<string, any>>(
+  config: T,
+): T {
+  const out: Record<string, any> = { ...config };
+  for (const field of [
+    'base_rate',
+    'base_radius',
+    'surcharge_per_km',
+    'pro_exposure_multiplier',
+  ] as const) {
+    if (out[field] !== undefined && out[field] !== null) {
+      out[field] = Number(out[field]);
+    }
+  }
+  return out as T;
+}
