@@ -8,10 +8,12 @@ services:
     startCommand: npm run start:prod
     healthCheckPath: /
     autoDeployTrigger: commit
-    # No migration history yet (pre-launch, schema.prisma is the source of truth) —
-    # pushes the current schema directly before traffic switches to the new deploy.
-    # Switch back to `prisma migrate deploy` once there's a real migration history to preserve.
-    preDeployCommand: npx prisma db push --accept-data-loss
+    # Supabase migrations (cartman-mobile/supabase/migrations/) are the source of truth
+    # for DDL. schema.prisma mirrors them exactly so `prisma db push` is a no-op
+    # verification step — it will only fail if schema.prisma drifts from the DB.
+    # NEVER add --accept-data-loss here: all schema changes must go through a new
+    # Supabase migration first, then be reflected in schema.prisma.
+    preDeployCommand: npx prisma db push
     envVars:
       - key: NODE_VERSION
         value: 24.13.0
