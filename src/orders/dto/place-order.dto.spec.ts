@@ -4,6 +4,7 @@ import { plainToInstance } from 'class-transformer';
 import {
   PlaceMerchantOrderDto,
   PlaceErrandOrderDto,
+  PlaceMultiStopOrderDto,
   PlacePickupDropoffOrderDto,
   UpdateOrderStatusDto,
 } from './place-order.dto';
@@ -100,6 +101,80 @@ describe('PlacePickupDropoffOrderDto', () => {
     void dropoff_lat;
     void dropoff_lng;
     const dto = plainToInstance(PlacePickupDropoffOrderDto, rest);
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe('PlaceMultiStopOrderDto', () => {
+  const validBody = {
+    stops: [
+      {
+        seq: 0,
+        kind: 'pickup',
+        label: 'SM Antique',
+        lat: 10.5,
+        lng: 122.1,
+        payload: { item: 'documents' },
+      },
+      {
+        seq: 1,
+        kind: 'deliver',
+        label: 'Home',
+        lat: 10.6,
+        lng: 122.2,
+        payload: {},
+      },
+    ],
+    notes: 'Fragile',
+    payment: 'cod',
+  };
+
+  it('accepts the §1 contract body (stops[], notes, payment)', async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, validBody);
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts a body without notes/payment/labels/payloads (all optional)', async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, {
+      stops: [
+        { seq: 0, kind: 'pickup', lat: 10.5, lng: 122.1 },
+        { seq: 1, kind: 'deliver', lat: 10.6, lng: 122.2 },
+      ],
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects fewer than 2 stops', async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, {
+      stops: [validBody.stops[0]],
+    });
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects an unknown stop kind', async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, {
+      stops: [{ ...validBody.stops[0], kind: 'teleport' }, validBody.stops[1]],
+    });
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a stop with missing coordinates', async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, {
+      stops: [{ seq: 0, kind: 'pickup', label: 'A' }, validBody.stops[1]],
+    });
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a negative seq', async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, {
+      stops: [{ ...validBody.stops[0], seq: -1 }, validBody.stops[1]],
+    });
     const errors = await validate(dto);
     expect(errors.length).toBeGreaterThan(0);
   });

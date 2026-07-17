@@ -1,7 +1,9 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
   IsArray,
   IsIn,
+  IsInt,
   IsLatitude,
   IsLongitude,
   IsNumber,
@@ -10,6 +12,7 @@ import {
   IsPositive,
   IsString,
   IsUUID,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -97,6 +100,63 @@ export class PlacePickupDropoffOrderDto {
   @IsOptional()
   @IsString()
   recipient_phone?: string;
+}
+
+/** One stop in a multi-stop order (cartman-server-endpoints.md §1). */
+export class OrderStopDto {
+  @IsInt()
+  @Min(0)
+  seq!: number;
+
+  @IsIn(['pickup', 'deliver'])
+  kind!: 'pickup' | 'deliver';
+
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  @IsLatitude()
+  lat!: number;
+
+  @IsLongitude()
+  lng!: number;
+
+  @IsOptional()
+  @IsObject()
+  payload?: Record<string, unknown> | null;
+}
+
+/**
+ * Body for POST /orders/multi-stop. ≥2 stops; seq contiguity from 0 is a
+ * cross-field rule, so OrdersService checks it rather than the DTO.
+ */
+export class PlaceMultiStopOrderDto {
+  @IsArray()
+  @ArrayMinSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => OrderStopDto)
+  stops!: OrderStopDto[];
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  // Sent by the client for interface parity with the contract body; the DB
+  // column defaults to cod when omitted.
+  @IsOptional()
+  @IsIn(['cod', 'gcash', 'maya', 'card', 'cart_credits'])
+  payment?: 'cod' | 'gcash' | 'maya' | 'card' | 'cart_credits';
+}
+
+/**
+ * Body for PATCH /orders/:id/cancel and /orders/:id/reject. Both clients may
+ * send no body at all — `reason` is the only (optional) field; the service
+ * trims it and stores empty as null.
+ */
+export class CancelOrderDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }
 
 /** Body for PATCH /orders/:id/status. */
