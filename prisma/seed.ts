@@ -199,6 +199,46 @@ async function seedMerchant() {
   return merchant;
 }
 
+// The Merchant Panel discovers its store(s) through merchant_users (RLS
+// returns own links only) and cartman-server's accept/ready/reject guard
+// requires the same membership row — a merchant login without one sees
+// "No store linked yet" and can act on nothing.
+async function seedMerchantUser(merchantId: string) {
+  console.log('Seeding merchant panel login...');
+  const user = await ensureAuthUser({
+    email: 'seed-merchant@cartman.ph',
+    fullName: 'Aling Nena',
+    role: 'merchant',
+    phone: '+639170000003',
+  });
+
+  await prisma.profiles.upsert({
+    where: { id: user.id },
+    create: {
+      id: user.id,
+      full_name: 'Aling Nena',
+      phone: '+639170000003',
+      role: 'merchant',
+    },
+    update: {
+      full_name: 'Aling Nena',
+      phone: '+639170000003',
+      role: 'merchant',
+    },
+  });
+
+  await prisma.merchant_users.upsert({
+    where: {
+      merchant_id_user_id: { merchant_id: merchantId, user_id: user.id },
+    },
+    create: { merchant_id: merchantId, user_id: user.id },
+    update: {},
+  });
+  console.log(`  linked ${user.email} to merchant ${merchantId}`);
+
+  return user;
+}
+
 // Belt-and-suspenders safety net: `order_ref_seq` is provisioned by
 // cartman-mobile's supabase/migrations (source of truth) and should already
 // exist on any DB that ran them. `prisma db push` (used by render.yaml's
@@ -217,7 +257,8 @@ async function main() {
   await ensureOrderRefSeq();
   await seedCustomer();
   await seedRider();
-  await seedMerchant();
+  const merchant = await seedMerchant();
+  await seedMerchantUser(merchant.id);
   console.log('Seed complete.');
 }
 
