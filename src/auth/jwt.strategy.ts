@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
+import { SupabaseJwtKeys } from './supabase-jwt-keys';
 
 interface JwtPayload {
   sub: string;
@@ -23,14 +24,32 @@ export interface AuthenticatedUser {
 /**
  * Validates Supabase-issued JWTs.
  * Extracts user ID (sub) and looks up the profile role from the DB.
+ *
+ * Key selection is per-token (SupabaseJwtKeys): legacy HS256 projects and
+ * the test fixtures verify with SUPABASE_JWT_SECRET; newer projects sign
+ * ES256 and verify against the project JWKS.
  */
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private readonly prisma: PrismaService) {
+    const keys = new SupabaseJwtKeys(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_JWT_SECRET || 'secret',
+    );
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: process.env.SUPABASE_JWT_SECRET || 'secret',
+      algorithms: ['HS256', 'ES256', 'RS256'],
+      secretOrKeyProvider: (
+        _req: unknown,
+        rawJwt: string,
+        done: (err: Error | null, key?: string) => void,
+      ) => {
+        keys.keyFor(rawJwt).then(
+          (key) => done(null, key),
+          (err: Error) => done(err),
+        );
+      },
     });
   }
 
