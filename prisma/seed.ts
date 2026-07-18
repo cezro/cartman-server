@@ -104,6 +104,39 @@ async function seedCustomer() {
   return user;
 }
 
+// Checkout requires a default saved address in live mode (an order a rider
+// can't navigate to must not be placeable) — without these the seed customer
+// dead-ends at "No saved address yet".
+async function seedCustomerAddresses(userId: string) {
+  console.log('Seeding customer addresses...');
+  const addresses = [
+    {
+      id: '30000000-0000-0000-0000-000000000101',
+      label: 'Home',
+      text_address: '123 Eastwood Avenue, Bagumbayan, Quezon City',
+      lat: 14.587,
+      lng: 121.0814,
+      is_default: true,
+    },
+    {
+      id: '30000000-0000-0000-0000-000000000102',
+      label: 'Work',
+      text_address: '8th Ave, Bonifacio Global City, Taguig',
+      lat: 14.5487,
+      lng: 121.0508,
+      is_default: false,
+    },
+  ];
+  for (const a of addresses) {
+    await prisma.addresses.upsert({
+      where: { id: a.id },
+      create: { ...a, user_id: userId },
+      update: { ...a, user_id: userId },
+    });
+    console.log(`  address ready: ${a.label}`);
+  }
+}
+
 async function seedRider() {
   console.log('Seeding rider...');
   const user = await ensureAuthUser({
@@ -255,7 +288,8 @@ async function ensureOrderRefSeq() {
 
 async function main() {
   await ensureOrderRefSeq();
-  await seedCustomer();
+  const customer = await seedCustomer();
+  await seedCustomerAddresses(customer.id);
   await seedRider();
   const merchant = await seedMerchant();
   await seedMerchantUser(merchant.id);
