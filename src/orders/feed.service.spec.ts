@@ -196,7 +196,7 @@ describe('FeedService', () => {
     expect(result[0].distance_km).not.toBeNull();
   });
 
-  it('queries candidates with take 50, orderBy created_at asc, including order_items', async () => {
+  it('queries candidates with take 50, orderBy created_at asc, including order_items and order_stops', async () => {
     await service.rankedFeed('rider-1');
 
     expect(prisma.orders.findMany).toHaveBeenCalledWith(
@@ -205,8 +205,59 @@ describe('FeedService', () => {
         orderBy: { created_at: 'asc' },
         include: expect.objectContaining({
           order_items: true,
+          // Multi-stop cards/active screens need the route without a second
+          // round trip; serializeOrder passes the rows through.
+          order_stops: true,
         }) as Record<string, unknown>,
       }),
     );
+  });
+
+  describe('accept-window expiry (R-4.1)', () => {
+    it('stamps each entry with expires_at = created_at + 5 minutes (default window)', async () => {
+      prisma.orders.findMany.mockResolvedValue([
+        baseOrder({ id: 'order-1', created_at: minutesAgo(2) }),
+      ]);
+
+      const [entry] = await service.rankedFeed('rider-1');
+
+      expect(entry.expires_at).toBe(
+        new Date(minutesAgo(2).getTime() + 5 * 60_000).toISOString(),
+      );
+    });
+
+    it('honors FEED_ACCEPT_WINDOW_MINUTES as the window length', async () => {
+      process.env.FEED_ACCEPT_WINDOW_MINUTES = '2';
+      try {
+        const windowed = new FeedService(
+          prisma as unknown as PrismaService,
+          ledgerService as unknown as LedgerService,
+        );
+        prisma.orders.findMany.mockResolvedValue([
+          baseOrder({ id: 'order-1', created_at: minutesAgo(1) }),
+        ]);
+
+        const [entry] = await windowed.rankedFeed('rider-1');
+
+        expect(entry.expires_at).toBe(
+          new Date(minutesAgo(1).getTime() + 2 * 60_000).toISOString(),
+        );
+      } finally {
+        delete process.env.FEED_ACCEPT_WINDOW_MINUTES;
+      }
+    });
+
+    it('an already-expired order still appears in the feed (the window is urgency, not a lifecycle rule)', async () => {
+      prisma.orders.findMany.mockResolvedValue([
+        baseOrder({ id: 'old-order', created_at: minutesAgo(45) }),
+      ]);
+
+      const result = await service.rankedFeed('rider-1');
+
+      expect(result.map((e) => e.order.id as string)).toContain('old-order');
+      expect(new Date(result[0].expires_at).getTime()).toBeLessThan(
+        NOW.getTime(),
+      );
+    });
   });
 });

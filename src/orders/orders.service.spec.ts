@@ -200,6 +200,13 @@ describe('OrdersService', () => {
         }),
       );
       expect(result.status).toBe(order_status.accepted);
+      // The claim response is what the rider's active screen boots from —
+      // it must carry the line items and the multi-stop route.
+      expect(prisma.orders.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: { order_items: true, order_stops: true },
+        }),
+      );
     });
   });
 

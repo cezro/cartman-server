@@ -79,8 +79,8 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `PATCH /orders/:id/accept` | merchant panel | → order JSON (`pending → preparing`, else 409). Membership-guarded (§3) |
 | `PATCH /orders/:id/ready` | merchant panel | → order JSON (`preparing → ready_for_pickup`, else 409). Membership-guarded (§3) |
 | `PATCH /orders/:id/reject` | merchant panel | `{reason?}` → order JSON (`pending\|preparing → canceled`); 409 once a rider is assigned. Done — see §2 |
-| `GET /orders/feed` | rider | → `[{order: <order JSON>, score, distance_km}]`; 403 when off-duty / locked-out (client shows `message`) |
-| `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC) |
+| `GET /orders/feed` | rider | → `[{order: <order JSON>, score, distance_km, expires_at}]`; 403 when off-duty / locked-out (client shows `message`). `expires_at` = `created_at + FEED_ACCEPT_WINDOW_MINUTES` (default 5) — R-4.1 display urgency only, expired entries stay claimable. Entries embed `order_items` + `order_stops` |
+| `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC). Response embeds `order_items` + `order_stops` (boots the active screen) |
 | `PATCH /orders/:id/status` | rider | `{status}` → order JSON (`advance_order_status` RPC) |
 | `GET /riders/me/history` | rider | → `[order JSON]`, delivered, caller-scoped |
 | `PATCH /riders/me/duty` | rider | `{is_active: bool}` → `{}` (`set_duty` RPC) |

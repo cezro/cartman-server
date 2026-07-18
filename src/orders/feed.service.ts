@@ -6,6 +6,11 @@ import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
 
 const AGE_CAP_MINUTES = 30;
+// R-4.1 accept-window: how long a card counts down before the client shows
+// its "waiting long" state. Display urgency only — expired orders stay in
+// the feed and stay claimable (dropping them here would strand the order:
+// there is no auto-cancel/re-broadcast lifecycle yet).
+const ACCEPT_WINDOW_MINUTES = 5;
 const PAYOUT_CAP_CENTAVOS = 20_000;
 const PROX_RANGE_KM = 10;
 const RIDER_LOCATION_FRESHNESS_MINUTES = 10;
@@ -25,6 +30,8 @@ export interface FeedEntry {
   order: Record<string, any>;
   score: number;
   distance_km: number | null;
+  /** ISO timestamp of the accept-window end (R-4.1): created_at + window. */
+  expires_at: string;
 }
 
 interface ScoredEntry extends FeedEntry {
@@ -53,6 +60,7 @@ export class FeedService {
   private readonly wProx: number;
   private readonly wPayout: number;
   private readonly wType: number;
+  private readonly acceptWindowMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -65,6 +73,8 @@ export class FeedService {
     this.wProx = envWeight('FEED_W_PROX', 0.3);
     this.wPayout = envWeight('FEED_W_PAYOUT', 0.2);
     this.wType = envWeight('FEED_W_TYPE', 0.1);
+    this.acceptWindowMs =
+      envWeight('FEED_ACCEPT_WINDOW_MINUTES', ACCEPT_WINDOW_MINUTES) * 60_000;
   }
 
   async rankedFeed(
@@ -80,7 +90,9 @@ export class FeedService {
         },
         take: CANDIDATE_LIMIT,
         orderBy: { created_at: 'asc' },
-        include: { order_items: true },
+        // order_stops so multi-stop cards/active screens get the route
+        // without a second round trip; serializeOrder passes rows through.
+        include: { order_items: true, order_stops: true },
       }),
       this.resolveRiderPosition(riderId, lat, lng),
     ]);
@@ -125,6 +137,7 @@ export class FeedService {
         order: serializeOrder(order),
         score: round4(score),
         distance_km: distanceKm != null ? round4(distanceKm) : null,
+        expires_at: new Date(createdAtMs + this.acceptWindowMs).toISOString(),
         createdAtMs,
       };
     });
@@ -136,7 +149,12 @@ export class FeedService {
 
     return scored
       .slice(0, FEED_LIMIT)
-      .map(({ order, score, distance_km }) => ({ order, score, distance_km }));
+      .map(({ order, score, distance_km, expires_at }) => ({
+        order,
+        score,
+        distance_km,
+        expires_at,
+      }));
   }
 
   private async resolveRiderPosition(

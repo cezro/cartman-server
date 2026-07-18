@@ -562,6 +562,9 @@ export class OrdersService {
 
     const order = await this.prisma.orders.findUnique({
       where: { id: orderId },
+      // The claim response boots the rider's active screen — carry the line
+      // items and the multi-stop route (realtime rows never embed relations).
+      include: { order_items: true, order_stops: true },
     });
     return {
       ...this.serializeOrder(order!),
