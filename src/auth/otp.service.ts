@@ -222,8 +222,30 @@ export class OtpService {
       }),
     });
 
-    if (!response.ok) {
-      console.error('Semaphore SMS failed:', await response.text());
+    // Semaphore reports some validation failures (e.g. an unregistered
+    // sender name) as HTTP 200 with an error object — observed live
+    // 2026-07-18 — so `response.ok` alone would report success while no SMS
+    // ever left. A real accept is always an ARRAY of message objects
+    // carrying `message_id`.
+    const bodyText = await response.text();
+    let accepted = false;
+    if (response.ok) {
+      try {
+        const parsed: unknown = JSON.parse(bodyText);
+        accepted =
+          Array.isArray(parsed) &&
+          parsed.length > 0 &&
+          parsed.every(
+            (m: unknown) =>
+              typeof m === 'object' && m !== null && 'message_id' in m,
+          );
+      } catch {
+        accepted = false;
+      }
+    }
+
+    if (!accepted) {
+      console.error('Semaphore SMS failed:', bodyText);
       throw new HttpException(
         'SMS send failed — try again',
         HttpStatus.BAD_GATEWAY,

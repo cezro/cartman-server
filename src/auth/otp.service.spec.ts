@@ -71,7 +71,12 @@ describe('OtpService', () => {
         Promise<{ ok: boolean; text: () => Promise<string> }>,
         [string, RequestInit]
       >()
-      .mockResolvedValue({ ok: true, text: () => Promise.resolve('') });
+      .mockResolvedValue({
+        ok: true,
+        // A real Semaphore accept: an ARRAY of message objects. (Resend's
+        // path never reads the body, so sharing this default is safe.)
+        text: () => Promise.resolve('[{"message_id": 187067302}]'),
+      });
     global.fetch = fetchMock as unknown as typeof fetch;
 
     delete process.env.OTP_DEV_MODE;
@@ -329,6 +334,40 @@ describe('OtpService', () => {
       );
       await expect(service.sendOtp('+639171234567')).rejects.toMatchObject({
         status: 502,
+      });
+    });
+
+    it('throws 502 when Semaphore answers HTTP 200 with a validation-error body (invalid sender name)', async () => {
+      // Observed live 2026-07-18: an unregistered sender name comes back as
+      // HTTP 200 + {"sendername":[...]} — no message sent, no credit spent.
+      // response.ok alone would report success while the SMS never left.
+      fetchMock.mockResolvedValue({
+        ok: true,
+        text: () =>
+          Promise.resolve(
+            '{"sendername":["The selected sendername is invalid."]}',
+          ),
+      });
+
+      await expect(service.sendOtp('+639171234567')).rejects.toMatchObject({
+        status: 502,
+      });
+    });
+
+    it('throws 502 when Semaphore answers 200 with an empty or non-JSON body', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(''),
+      });
+
+      await expect(service.sendOtp('+639171234567')).rejects.toMatchObject({
+        status: 502,
+      });
+    });
+
+    it('accepts a real Semaphore response: HTTP 200 with a message array', async () => {
+      await expect(service.sendOtp('+639171234567')).resolves.toMatchObject({
+        message: 'OTP sent successfully',
       });
     });
   });
