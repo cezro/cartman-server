@@ -108,8 +108,11 @@ export class OrderStopDto {
   @Min(0)
   seq!: number;
 
-  @IsIn(['pickup', 'deliver'])
-  kind!: 'pickup' | 'deliver';
+  // Matches the DB contract for order_stops.kind ('pickup' | 'buy' |
+  // 'deliver', 20260630000100_schema.sql) — 'buy' is the Multi-Stop
+  // Builder's Pabili task tile.
+  @IsIn(['pickup', 'buy', 'deliver'])
+  kind!: 'pickup' | 'buy' | 'deliver';
 
   @IsOptional()
   @IsString()

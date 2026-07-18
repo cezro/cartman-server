@@ -17,13 +17,22 @@ next to `backend-schema.md` (the DB contract) on purpose.
 > JSON. Where an RPC already exists, **call it** instead of hand-writing the
 > UPDATE, so the atomicity/RLS guarantees in `CLAUDE.md §3` hold in one place.
 
-> **Status — as-built:** all seven gaps below are now implemented in this
-> repo. One structural deviation from the guidance above: this server's
-> established pattern is direct Prisma writes inside transactions (it holds
-> its own DB connection; it does not call the Supabase RPCs), so each route
-> **matches the RPC's semantics** — same guards, same refusals, same JSON —
-> rather than invoking it. Each section carries a **Built:** line recording
-> exactly what shipped and where it deviates from the original sketch.
+> **Status — as-built:** all seven gaps below are now implemented in
+> cartman-server. One structural deviation from the guidance above: this
+> server's established pattern is direct Prisma writes inside transactions
+> (it holds its own DB connection; it does not call the Supabase RPCs), so
+> each route **matches the RPC's semantics** — same guards, same refusals,
+> same JSON — rather than invoking it. Each section carries a **Built:**
+> line recording exactly what shipped and where it deviates from the
+> original sketch.
+>
+> **Client flips — done (2026-07-18):** the mobile multi-stop arm now POSTs
+> `/orders/multi-stop` (UnsupportedError stub deleted, builder screen live),
+> the panel reject goes through `PATCH /orders/:id/reject`, courier drafts
+> carry `recipient_name`/`recipient_phone` (C-6.3 write side), and the
+> `cancel_order` DB-parity RPC ships in `supabase/migrations/`
+> `20260717000100_cancel_order.sql`. The rider-feed dispatch rule has a
+> cross-service proof spec (`dispatch-feed.integration.spec.ts`).
 
 ---
 
@@ -104,8 +113,10 @@ Ranked by what blocks going live (mirrors `docs/go-live-gaps.md`).
 ### 1. `POST /orders/multi-stop` (INT-8) — **done**
 
 > **Built:** `OrdersController.placeMultiStopOrder` → `OrdersService.placeMultiStopOrder`
-> (`PlaceMultiStopOrderDto`: ≥2 stops, `kind ∈ {pickup, deliver}`, seq
-> contiguity checked in the service). Two deviations from the sketch below:
+> (`PlaceMultiStopOrderDto`: ≥2 stops, `kind ∈ {pickup, buy, deliver}` —
+> matching the DB contract for `order_stops.kind`; 'buy' is the Builder's
+> Pabili task tile — seq contiguity checked in the service). Two deviations
+> from the sketch below:
 > the order is born **`ready_for_pickup`**, not `pending` — this server's
 > rider feed only surfaces `ready_for_pickup`, and non-merchant orders have
 > no panel to advance them out of `pending` (same convention as
@@ -113,9 +124,11 @@ Ranked by what blocks going live (mirrors `docs/go-live-gaps.md`).
 > summed haversine legs of the whole route. First/last stops are mirrored
 > into the flat `pickup_*`/`dropoff_*` columns for feed proximity scoring.
 
-The customer app throws `UnsupportedError` for `OrderType.multiStop`
-(`supabase_repositories.dart` `place()`), so multi-stop "Confirm booking" is
-dead in live mode.
+~~The customer app throws `UnsupportedError` for `OrderType.multiStop`~~ —
+**client flip done:** `place()` POSTs `/orders/multi-stop`, re-basing the
+builder's 1-based display `seq` to the 0-based wire contract and passing
+kinds through; the live-mode screen guard is gone and the builder picks
+real saved addresses per stop.
 
 - **Guard:** JWT (any authenticated customer).
 - **Body:**
@@ -150,8 +163,10 @@ dead in live mode.
 > `preparing`; the final UPDATE re-checks the guards atomically so a
 > concurrent rider claim also lands on 409.
 
-The panel currently reaches around the server with a direct
-`merchant_reject_order` RPC call. Move it behind the write-path like accept/ready.
+~~The panel currently reaches around the server with a direct
+`merchant_reject_order` RPC call~~ — **panel flip done:** `useRejectOrder`
+PATCHes `/orders/:id/reject` like accept/ready; the RPC remains the tested
+DB-level twin only.
 
 - **Guard:** JWT **and** `merchant_users` membership of the order's store
   (403 otherwise). Role `merchant`.
@@ -191,8 +206,12 @@ only *sees* its own via RLS, but the write path is too loose).
 > optional trimmed `{reason}` body as `canceled_reason`. Not-found /
 > not-yours → **404**; owned-but-too-late (rider assigned or past
 > `ready_for_pickup`) → **409** (was a blanket 400). The cancellable set is
-> unchanged (`pending|ready_for_pickup`, unassigned). The optional
-> `cancel_order` RPC parity item remains open on the cartman-mobile side.
+> unchanged (`pending|ready_for_pickup`, unassigned). **RPC parity done:**
+> `cancel_order(p_order_id, p_reason)` ships in
+> `supabase/migrations/20260717000100_cancel_order.sql` with the SAME
+> cancellable set as this route — `ready_for_pickup` must be cancellable
+> because merchant-less orders are born there (MM-4), `preparing` is
+> refused because the merchant is already cooking.
 
 The customer cancel path exists but doesn't attribute the cancellation.
 
@@ -277,14 +296,17 @@ and `webhooks.service.spec.ts` — membership 403s, the 404/409 refusals, seq
 contiguity, path-escape attempts, token pruning, and the rider fan-out
 eligibility are all covered).
 
-Remaining follow-ups live outside this repo:
+Remaining follow-ups (2026-07-18 — client flips and DB parity are done):
 
-1. **Client flips** — cartman-mobile replaces the multi-stop
-   `UnsupportedError` arm with `POST /orders/multi-stop`; the merchant panel
-   swaps its direct `merchant_reject_order` RPC call for
-   `PATCH /orders/:id/reject`; the customer `Order` model gains the two
-   nullable `canceled_reason`/`canceled_by` fields.
+1. ~~**Client flips**~~ — done: multi-stop `UnsupportedError` arm replaced
+   with `POST /orders/multi-stop`; panel reject moved to
+   `PATCH /orders/:id/reject`; `Order` parses `canceled_reason`/
+   `canceled_by` and carries `recipient_name`/`recipient_phone` on courier
+   drafts (C-6.3 write side, collected on the delivery-details screen).
 2. **Ops** — set `CORS_ORIGINS` for the deployed panel origin and the three
-   `FCM_*` env vars from a Firebase service account.
-3. **Optional DB parity** — a `cancel_order(:id, :reason)` RPC in
-   `supabase/migrations` so customer cancel has a tested DB-level twin.
+   `FCM_*` env vars from a Firebase service account; `supabase db push` the
+   pending migrations (`20260714000000_handle_new_user_phone.sql`,
+   `20260717000100_cancel_order.sql`).
+3. ~~**Optional DB parity**~~ — done: `cancel_order(:id, :reason)` in
+   `supabase/migrations/20260717000100_cancel_order.sql`, exercised by 6
+   cases in `supabase/tests/merchant_panel.test.ts`.
