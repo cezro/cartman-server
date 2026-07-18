@@ -1,8 +1,13 @@
-import { BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
-import { order_status } from '@prisma/client';
+import { order_status, order_type } from '@prisma/client';
 
 describe('OrdersService', () => {
   let service: OrdersService;
@@ -19,6 +24,7 @@ describe('OrdersService', () => {
     };
     riders: { findUnique: jest.Mock };
     rider_wallet_transactions: { findFirst: jest.Mock; create: jest.Mock };
+    merchant_users: { findFirst: jest.Mock };
     $transaction: jest.Mock;
     $queryRaw: jest.Mock;
   };
@@ -46,6 +52,7 @@ describe('OrdersService', () => {
       },
       riders: { findUnique: jest.fn() },
       rider_wallet_transactions: { findFirst: jest.fn(), create: jest.fn() },
+      merchant_users: { findFirst: jest.fn() },
       $queryRaw: jest.fn().mockImplementation(() => {
         nextvalCounter += 1n;
         return Promise.resolve([{ nextval: nextvalCounter }]);
@@ -488,13 +495,20 @@ describe('OrdersService', () => {
     });
   });
 
-  describe('2.5 — customer cancel', () => {
-    it('succeeds while the order is unassigned and pending/ready_for_pickup', async () => {
-      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+  describe('2.5 / §4 — customer cancel attribution', () => {
+    const ownedOrder = {
+      id: 'order-1',
+      customer_id: 'cust-1',
+      status: order_status.pending,
+      assigned_rider_id: null,
+    };
+
+    it('succeeds while unassigned and pending/ready_for_pickup, stamping canceled_by=customer', async () => {
       prisma.orders.findUnique.mockResolvedValue({
-        id: 'order-1',
+        ...ownedOrder,
         status: order_status.canceled,
       });
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
 
       const result = await service.cancelOrder('order-1', 'cust-1');
 
@@ -508,21 +522,426 @@ describe('OrdersService', () => {
               in: [order_status.pending, order_status.ready_for_pickup],
             },
           }) as Record<string, unknown>,
-          data: { status: order_status.canceled },
+          data: {
+            status: order_status.canceled,
+            canceled_by: 'customer',
+            canceled_reason: null,
+          },
         }),
       );
       expect(result.status).toBe(order_status.canceled);
     });
 
-    it('is rejected once a rider has been assigned (updateMany count 0)', async () => {
+    it('records a trimmed cancellation reason when the body carries one', async () => {
+      prisma.orders.findUnique.mockResolvedValue(ownedOrder);
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.cancelOrder('order-1', 'cust-1', '  changed my mind  ');
+
+      expect(prisma.orders.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            canceled_reason: 'changed my mind',
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('stores a whitespace-only reason as null', async () => {
+      prisma.orders.findUnique.mockResolvedValue(ownedOrder);
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.cancelOrder('order-1', 'cust-1', '   ');
+
+      expect(prisma.orders.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            canceled_reason: null,
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('404s when the order does not exist', async () => {
+      prisma.orders.findUnique.mockResolvedValue(null);
+
+      await expect(service.cancelOrder('order-x', 'cust-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("404s when the order belongs to another customer (doesn't leak existence)", async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...ownedOrder,
+        customer_id: 'someone-else',
+      });
+
+      await expect(service.cancelOrder('order-1', 'cust-1')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('409s once a rider has been assigned (updateMany count 0)', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...ownedOrder,
+        assigned_rider_id: 'rider-1',
+        status: order_status.accepted,
+      });
       prisma.orders.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(service.cancelOrder('order-1', 'cust-1')).rejects.toThrow(
-        BadRequestException,
+        ConflictException,
       );
       await expect(service.cancelOrder('order-1', 'cust-1')).rejects.toThrow(
         'Order can no longer be cancelled',
       );
+    });
+  });
+
+  describe('§3 — merchant accept/ready membership guard', () => {
+    const merchantActor = { id: 'user-1', role: 'merchant' };
+    const adminActor = { id: 'admin-1', role: 'admin' };
+
+    const pendingOrder = {
+      id: 'order-1',
+      status: order_status.pending,
+      merchant_id: 'merchant-1',
+    };
+
+    it('merchantAccept 403s a merchant who is not a member of the order store', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.merchant_users.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.merchantAccept('order-1', merchantActor),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.orders.update).not.toHaveBeenCalled();
+    });
+
+    it('merchantAccept moves pending -> preparing for a store member', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.merchant_users.findFirst.mockResolvedValue({
+        merchant_id: 'merchant-1',
+        user_id: 'user-1',
+      });
+      prisma.orders.update.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.preparing,
+      });
+
+      const result = await service.merchantAccept('order-1', merchantActor);
+
+      expect(prisma.merchant_users.findFirst).toHaveBeenCalledWith({
+        where: { user_id: 'user-1', merchant_id: 'merchant-1' },
+      });
+      expect(prisma.orders.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'order-1' },
+          data: { status: order_status.preparing },
+        }),
+      );
+      expect(result.status).toBe(order_status.preparing);
+    });
+
+    it('merchantAccept lets an admin act without a membership row', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.orders.update.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.preparing,
+      });
+
+      await service.merchantAccept('order-1', adminActor);
+
+      expect(prisma.merchant_users.findFirst).not.toHaveBeenCalled();
+      expect(prisma.orders.update).toHaveBeenCalled();
+    });
+
+    it('merchantAccept 409s when the order is not pending', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.canceled,
+      });
+      prisma.merchant_users.findFirst.mockResolvedValue({
+        merchant_id: 'merchant-1',
+        user_id: 'user-1',
+      });
+
+      await expect(
+        service.merchantAccept('order-1', merchantActor),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.orders.update).not.toHaveBeenCalled();
+    });
+
+    it('merchantAccept 404s when the order does not exist', async () => {
+      prisma.orders.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.merchantAccept('order-missing', merchantActor),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('merchantAccept 403s a merchant on an order with no merchant (errand)', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        id: 'order-2',
+        status: order_status.pending,
+        merchant_id: null,
+      });
+
+      await expect(
+        service.merchantAccept('order-2', merchantActor),
+      ).rejects.toThrow(ForbiddenException);
+      expect(prisma.merchant_users.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('merchantMarkReady moves preparing -> ready_for_pickup for a store member', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.preparing,
+      });
+      prisma.merchant_users.findFirst.mockResolvedValue({
+        merchant_id: 'merchant-1',
+        user_id: 'user-1',
+      });
+      prisma.orders.update.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.ready_for_pickup,
+      });
+
+      const result = await service.merchantMarkReady('order-1', merchantActor);
+
+      expect(prisma.orders.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'order-1' },
+          data: { status: order_status.ready_for_pickup },
+        }),
+      );
+      expect(result.status).toBe(order_status.ready_for_pickup);
+    });
+
+    it('merchantMarkReady 409s when the order is still pending (accept first)', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.merchant_users.findFirst.mockResolvedValue({
+        merchant_id: 'merchant-1',
+        user_id: 'user-1',
+      });
+
+      await expect(
+        service.merchantMarkReady('order-1', merchantActor),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.orders.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('§2 — merchant reject', () => {
+    const merchantActor = { id: 'user-1', role: 'merchant' };
+    const membership = { merchant_id: 'merchant-1', user_id: 'user-1' };
+
+    const pendingOrder = {
+      id: 'order-1',
+      status: order_status.pending,
+      merchant_id: 'merchant-1',
+      assigned_rider_id: null,
+    };
+
+    it('cancels a pending order with canceled_by=merchant and the trimmed reason', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.merchant_users.findFirst.mockResolvedValue(membership);
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.merchantReject('order-1', merchantActor, '  no stock  ');
+
+      expect(prisma.orders.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'order-1',
+            assigned_rider_id: null,
+            status: { in: [order_status.pending, order_status.preparing] },
+          }) as Record<string, unknown>,
+          data: {
+            status: order_status.canceled,
+            canceled_by: 'merchant',
+            canceled_reason: 'no stock',
+          },
+        }),
+      );
+    });
+
+    it('treats a missing/empty reason as null', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.merchant_users.findFirst.mockResolvedValue(membership);
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.merchantReject('order-1', merchantActor);
+
+      expect(prisma.orders.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            canceled_reason: null,
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it("404s a merchant who is not a member of the order's store (not-yours = not-found)", async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.merchant_users.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.merchantReject('order-1', merchantActor),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('404s when the order does not exist', async () => {
+      prisma.orders.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.merchantReject('order-x', merchantActor),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('lets an admin reject without a membership row', async () => {
+      prisma.orders.findUnique.mockResolvedValue(pendingOrder);
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.merchantReject('order-1', { id: 'admin-1', role: 'admin' });
+
+      expect(prisma.merchant_users.findFirst).not.toHaveBeenCalled();
+      expect(prisma.orders.updateMany).toHaveBeenCalled();
+    });
+
+    it('409s once a rider has been assigned', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.accepted,
+        assigned_rider_id: 'rider-1',
+      });
+      prisma.merchant_users.findFirst.mockResolvedValue(membership);
+
+      await expect(
+        service.merchantReject('order-1', merchantActor),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('409s when the order is past preparing (e.g. delivered)', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...pendingOrder,
+        status: order_status.delivered,
+      });
+      prisma.merchant_users.findFirst.mockResolvedValue(membership);
+
+      await expect(
+        service.merchantReject('order-1', merchantActor),
+      ).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe('§1 — multi-stop orders', () => {
+    // Two co-located stops → zero route distance → the ₱50 minimum fare
+    // (5000¢) applies, making the money assertions deterministic.
+    const stops = [
+      { seq: 1, kind: 'deliver', label: 'B', lat: 10.5, lng: 122.1 },
+      {
+        seq: 0,
+        kind: 'pickup',
+        label: 'A',
+        lat: 10.5,
+        lng: 122.1,
+        payload: { item: 'docs' },
+      },
+    ];
+
+    beforeEach(() => {
+      prisma.orders.create.mockImplementation(
+        (args: { data: Record<string, unknown> }) =>
+          Promise.resolve({ id: 'order-ms', ...args.data, order_stops: [] }),
+      );
+    });
+
+    it('creates a multi_stop order born ready_for_pickup with the stops fanned out', async () => {
+      await service.placeMultiStopOrder('cust-1', { stops, notes: 'Fragile' });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            customer_id: 'cust-1',
+            type: order_type.multi_stop,
+            status: order_status.ready_for_pickup,
+            notes: 'Fragile',
+            order_stops: {
+              create: [
+                expect.objectContaining({ seq: 0, kind: 'pickup' }),
+                expect.objectContaining({ seq: 1, kind: 'deliver' }),
+              ],
+            },
+          }) as Record<string, unknown>,
+          include: { order_stops: true },
+        }),
+      );
+    });
+
+    it('mirrors the first stop into pickup_* and the last into dropoff_* (feed proximity + display)', async () => {
+      await service.placeMultiStopOrder('cust-1', {
+        stops: [
+          { seq: 0, kind: 'pickup', label: 'Start', lat: 10.1, lng: 122.1 },
+          { seq: 1, kind: 'deliver', label: 'Mid', lat: 10.2, lng: 122.2 },
+          { seq: 2, kind: 'deliver', label: 'End', lat: 10.3, lng: 122.3 },
+        ],
+      });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            pickup_lat: 10.1,
+            pickup_lng: 122.1,
+            pickup_text: 'Start',
+            dropoff_lat: 10.3,
+            dropoff_lng: 122.3,
+            dropoff_text: 'End',
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('charges the minimum fare for a zero-distance route, payout = fee = total', async () => {
+      const result = await service.placeMultiStopOrder('cust-1', { stops });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            delivery_fee: 5000n,
+            delivery_payout: 5000n,
+            total: 5000n,
+          }) as Record<string, unknown>,
+        }),
+      );
+      expect(result.ref_no).toMatch(/^CMN-\d{6}$/);
+    });
+
+    it('rejects non-contiguous seq values (0,2)', async () => {
+      await expect(
+        service.placeMultiStopOrder('cust-1', {
+          stops: [
+            { seq: 0, kind: 'pickup', lat: 10, lng: 122 },
+            { seq: 2, kind: 'deliver', lat: 10, lng: 122 },
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.orders.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects duplicate seq values (0,0)', async () => {
+      await expect(
+        service.placeMultiStopOrder('cust-1', {
+          stops: [
+            { seq: 0, kind: 'pickup', lat: 10, lng: 122 },
+            { seq: 0, kind: 'deliver', lat: 10, lng: 122 },
+          ],
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });
