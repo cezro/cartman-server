@@ -147,6 +147,24 @@ describe('PlaceMultiStopOrderDto', () => {
     expect(errors).toHaveLength(0);
   });
 
+  it("accepts a 'buy' stop — the Multi-Stop Builder's Pabili task tile", async () => {
+    const dto = plainToInstance(PlaceMultiStopOrderDto, {
+      stops: [
+        { seq: 0, kind: 'pickup', lat: 10.5, lng: 122.1 },
+        {
+          seq: 1,
+          kind: 'buy',
+          label: 'Sari-sari store',
+          lat: 10.55,
+          lng: 122.15,
+        },
+        { seq: 2, kind: 'deliver', lat: 10.6, lng: 122.2 },
+      ],
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
   it('rejects fewer than 2 stops', async () => {
     const dto = plainToInstance(PlaceMultiStopOrderDto, {
       stops: [validBody.stops[0]],

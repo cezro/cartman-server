@@ -16,7 +16,9 @@ import Joi from 'joi';
  *  - SUPABASE_WEBHOOK_SECRET — otherwise WebhooksController silently 401s
  *    every Supabase webhook forever (see webhooks.controller.ts).
  *  - CORS_ORIGINS — main.ts refuses to fall back to "allow all" in prod.
- *  - SEMAPHORE_API_KEY — optional for now (SMS OTP is a future integration).
+ *  - SEMAPHORE_API_KEY — required unless OTP_DEV_MODE=true (dev-mode OTP
+ *    skips SMS entirely, so booting prod without a key must be an explicit
+ *    opt-in, never an accident — see INT-13 in docs/go-live-gaps.md).
  *  - RESEND_API_KEY — optional for now (email OTP is a future integration).
  */
 export function validateEnv(
@@ -40,7 +42,10 @@ export function validateEnv(
     CORS_ORIGINS: isProduction
       ? Joi.string().required()
       : Joi.string().optional().allow(''),
-    SEMAPHORE_API_KEY: Joi.string().optional().allow(''),
+    SEMAPHORE_API_KEY:
+      isProduction && !otpDevMode
+        ? Joi.string().required()
+        : Joi.string().optional().allow(''),
     RESEND_API_KEY: Joi.string().optional().allow(''),
   }).unknown(true);
 

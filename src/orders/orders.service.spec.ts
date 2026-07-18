@@ -142,6 +142,36 @@ describe('OrdersService', () => {
       );
     });
 
+    it('placeFoodOrder stores the customer note on the order (cart "note for the restaurant")', async () => {
+      prisma.merchants.findUnique.mockResolvedValue({
+        id: 'm-1',
+        name: 'Kusina',
+        delivery_fee: 4900n,
+      });
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Adobo',
+        price: 12000n,
+        in_stock: true,
+      });
+      prisma.orders.create.mockResolvedValue({ id: 'order-n' });
+
+      await service.placeFoodOrder('cust-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+        notes: 'No onions please',
+      });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            notes: 'No onions please',
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
     it('placeFoodOrder / placeGroceryOrder still create as pending (merchant prep required)', async () => {
       prisma.merchants.findUnique.mockResolvedValue({
         id: 'merchant-1',
@@ -200,6 +230,13 @@ describe('OrdersService', () => {
         }),
       );
       expect(result.status).toBe(order_status.accepted);
+      // The claim response is what the rider's active screen boots from —
+      // it must carry the line items and the multi-stop route.
+      expect(prisma.orders.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: { order_items: true, order_stops: true },
+        }),
+      );
     });
   });
 

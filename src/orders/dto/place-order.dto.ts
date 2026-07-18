@@ -47,6 +47,12 @@ export class PlaceMerchantOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items!: OrderItemDto[];
+
+  // The cart's "note for the restaurant" — stored on orders.notes so the
+  // panel's order drawer shows it.
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 /** Body for POST /orders/errand. */
@@ -108,8 +114,11 @@ export class OrderStopDto {
   @Min(0)
   seq!: number;
 
-  @IsIn(['pickup', 'deliver'])
-  kind!: 'pickup' | 'deliver';
+  // Matches the DB contract for order_stops.kind ('pickup' | 'buy' |
+  // 'deliver', 20260630000100_schema.sql) — 'buy' is the Multi-Stop
+  // Builder's Pabili task tile.
+  @IsIn(['pickup', 'buy', 'deliver'])
+  kind!: 'pickup' | 'buy' | 'deliver';
 
   @IsOptional()
   @IsString()
