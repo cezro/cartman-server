@@ -72,7 +72,7 @@ export class OrdersService {
     data: any,
     type: typeof order_type.food | typeof order_type.grocery,
   ) {
-    const { merchant_id, items } = data;
+    const { merchant_id, items, notes } = data;
     if (!items || items.length === 0) {
       throw new BadRequestException('Order must contain items');
     }
@@ -129,6 +129,7 @@ export class OrdersService {
           delivery_fee,
           delivery_payout,
           total,
+          notes,
           order_items: {
             create: orderItemsData,
           },

@@ -47,6 +47,12 @@ export class PlaceMerchantOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items!: OrderItemDto[];
+
+  // The cart's "note for the restaurant" — stored on orders.notes so the
+  // panel's order drawer shows it.
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 /** Body for POST /orders/errand. */
