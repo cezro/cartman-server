@@ -6,6 +6,7 @@ import {
   PlaceErrandOrderDto,
   PlaceMultiStopOrderDto,
   PlacePickupDropoffOrderDto,
+  RateOrderDto,
   UpdateOrderStatusDto,
 } from './place-order.dto';
 
@@ -216,6 +217,55 @@ describe('UpdateOrderStatusDto', () => {
   it('rejects an unknown status value', async () => {
     const dto = plainToInstance(UpdateOrderStatusDto, { status: 'bogus' });
     const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe('RateOrderDto', () => {
+  it('accepts both stars plus a comment (§Ratings contract body)', async () => {
+    const dto = plainToInstance(RateOrderDto, {
+      merchant_stars: 5,
+      rider_stars: 4,
+      comment: 'Sarap, mabilis!',
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts a rider-only rating (merchant_stars omitted — merchant-less orders)', async () => {
+    const dto = plainToInstance(RateOrderDto, { rider_stars: 5 });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('accepts an empty body — "at least one score" is the service\'s cross-field rule', async () => {
+    const dto = plainToInstance(RateOrderDto, {});
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects out-of-range stars (0 and 6)', async () => {
+    const low = await validate(
+      plainToInstance(RateOrderDto, { merchant_stars: 0 }),
+    );
+    expect(low.length).toBeGreaterThan(0);
+    const high = await validate(
+      plainToInstance(RateOrderDto, { rider_stars: 6 }),
+    );
+    expect(high.length).toBeGreaterThan(0);
+  });
+
+  it('rejects fractional stars (int column, like the DB CHECK)', async () => {
+    const errors = await validate(
+      plainToInstance(RateOrderDto, { merchant_stars: 4.5 }),
+    );
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a non-string comment', async () => {
+    const errors = await validate(
+      plainToInstance(RateOrderDto, { rider_stars: 5, comment: 42 }),
+    );
     expect(errors.length).toBeGreaterThan(0);
   });
 });

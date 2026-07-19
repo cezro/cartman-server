@@ -12,6 +12,7 @@ import {
   IsPositive,
   IsString,
   IsUUID,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -166,6 +167,32 @@ export class CancelOrderDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+/**
+ * Body for POST /orders/:id/rating (cartman-server-endpoints.md §Ratings).
+ * Each score is an optional 1..5 int; "at least one score" is a cross-field
+ * rule, so OrdersService checks it rather than the DTO (same split as
+ * multi-stop seq contiguity).
+ */
+export class RateOrderDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  merchant_stars?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rider_stars?: number;
+
+  // Trimmed by the service; blank stored as null (nullif(trim(…)) parity
+  // with the rate_order RPC).
+  @IsOptional()
+  @IsString()
+  comment?: string;
 }
 
 /** Body for PATCH /orders/:id/status. */
