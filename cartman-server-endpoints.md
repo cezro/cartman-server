@@ -70,7 +70,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `GET /auth/me` | both apps | → `profiles` row + nested `rider` relation |
 | `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}]}` → order JSON |
 | `POST /orders/grocery` | customer | `{merchant_id, items:[…]}` → order JSON |
-| `POST /orders/errand` | customer | `{errand_payload, notes}` → order JSON |
+| `POST /orders/errand` | customer | `{errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text?}` → order JSON (400 without drop-off coords — a pabili is unfulfillable with nowhere to deliver) |
 | `POST /orders/courier` | customer | pickup/dropoff body (below) → order JSON |
 | `POST /orders/ride` | customer | pickup/dropoff body (below) → order JSON |
 | `POST /orders/multi-stop` | customer | `{stops:[…], notes?, payment?}` → order JSON, **201**. Done — see §1 |

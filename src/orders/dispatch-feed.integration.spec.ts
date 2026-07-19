@@ -158,6 +158,8 @@ describe('dispatch → rider feed (MM-4 proof)', () => {
     const placed = await ordersService.placeErrandOrder('cust-1', {
       errand_payload: null,
       notes: 'Bili ng load sa sari-sari store',
+      dropoff_lat: 10.1,
+      dropoff_lng: 122.1,
     });
 
     const feed = await feedService.rankedFeed('rider-1');

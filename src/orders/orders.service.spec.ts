@@ -89,6 +89,8 @@ describe('OrdersService', () => {
       await service.placeErrandOrder('cust-1', {
         errand_payload: {},
         notes: '',
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
       });
 
       expect(prisma.orders.create).toHaveBeenCalledWith(
@@ -98,6 +100,48 @@ describe('OrdersService', () => {
           }) as Record<string, unknown>,
         }),
       );
+    });
+
+    it('placeErrandOrder stores the drop-off and the structured payload', async () => {
+      prisma.orders.create.mockResolvedValue({
+        id: 'order-1',
+        status: order_status.ready_for_pickup,
+      });
+
+      await service.placeErrandOrder('cust-1', {
+        errand_payload: {
+          items: ['Biogesic 500mg'],
+          store: 'Mercury Drug',
+          budget_centavos: 50000,
+        },
+        notes: 'Buy: Biogesic 500mg · Store: Mercury Drug',
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
+        dropoff_text: 'Home',
+      });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            dropoff_lat: 10.1,
+            dropoff_lng: 122.1,
+            dropoff_text: 'Home',
+            errand_payload: expect.objectContaining({
+              store: 'Mercury Drug',
+            }) as Record<string, unknown>,
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('placeErrandOrder rejects a missing drop-off (unfulfillable order)', async () => {
+      await expect(
+        service.placeErrandOrder('cust-1', {
+          errand_payload: {},
+          notes: '',
+        }),
+      ).rejects.toThrow('Drop-off coordinates are required');
+      expect(prisma.orders.create).not.toHaveBeenCalled();
     });
 
     it('placeCourierOrder creates with status ready_for_pickup', async () => {
@@ -477,6 +521,8 @@ describe('OrdersService', () => {
       const result = await service.placeErrandOrder('cust-1', {
         errand_payload: {},
         notes: '',
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
       });
 
       expect(prisma.$queryRaw).toHaveBeenCalled();

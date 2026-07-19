@@ -159,7 +159,16 @@ export class OrdersService {
   }
 
   async placeErrandOrder(customerId: string, data: any) {
-    const { errand_payload, notes } = data;
+    const { errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text } =
+      data;
+
+    // A pabili has to be handed to the customer somewhere — without a
+    // drop-off the order is unfulfillable (the DB twin's place_order accepts
+    // the same fields; same guard style as courier/ride).
+    if (!dropoff_lat || !dropoff_lng) {
+      throw new BadRequestException('Drop-off coordinates are required');
+    }
+
     const delivery_fee = 10000n; // ₱100 — errand base fee
     const delivery_payout = delivery_fee;
 
@@ -176,6 +185,9 @@ export class OrdersService {
           // them there would make them unclaimable forever.
           status: order_status.ready_for_pickup,
           ref_no,
+          dropoff_lat,
+          dropoff_lng,
+          dropoff_text,
           delivery_fee,
           delivery_payout,
           total: delivery_fee,
