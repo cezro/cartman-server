@@ -12,6 +12,7 @@ import {
   IsPositive,
   IsString,
   IsUUID,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -57,10 +58,10 @@ export class PlaceMerchantOrderDto {
 
 /** Body for POST /orders/errand. */
 export class PlaceErrandOrderDto {
-  // Mobile currently always sends `null` (see the OrderType.errand branch in
-  // supabase_repositories.dart) — the Pabili flow folds store/items/budget
-  // into `notes` instead of a structured payload. Kept loosely typed
-  // (object or null) since OrdersService just stores it as-is.
+  // Structured pabili payload built by the mobile flow —
+  // {items[], store?, budget_centavos, instructions?} — stored as-is on
+  // orders.errand_payload; orders.notes stays the human-readable rider
+  // summary.
   @IsOptional()
   @IsObject()
   errand_payload?: Record<string, unknown> | null;
@@ -68,6 +69,21 @@ export class PlaceErrandOrderDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  // Where the rider hands over the pabili. Required by OrdersService (same
+  // manual guard as courier/ride) — optional here so the service's clearer
+  // error message is the one clients surface.
+  @IsOptional()
+  @IsLatitude()
+  dropoff_lat?: number;
+
+  @IsOptional()
+  @IsLongitude()
+  dropoff_lng?: number;
+
+  @IsOptional()
+  @IsString()
+  dropoff_text?: string;
 }
 
 /** Body for POST /orders/courier and POST /orders/ride. */
@@ -166,6 +182,32 @@ export class CancelOrderDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+/**
+ * Body for POST /orders/:id/rating (cartman-server-endpoints.md §Ratings).
+ * Each score is an optional 1..5 int; "at least one score" is a cross-field
+ * rule, so OrdersService checks it rather than the DTO (same split as
+ * multi-stop seq contiguity).
+ */
+export class RateOrderDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  merchant_stars?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rider_stars?: number;
+
+  // Trimmed by the service; blank stored as null (nullif(trim(…)) parity
+  // with the rate_order RPC).
+  @IsOptional()
+  @IsString()
+  comment?: string;
 }
 
 /** Body for PATCH /orders/:id/status. */

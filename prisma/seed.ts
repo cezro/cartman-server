@@ -232,6 +232,66 @@ async function seedMerchant() {
   return merchant;
 }
 
+// A grocery store so the /orders/grocery path is demoable — checkout derives
+// the order type from merchant.category (contains 'grocery'), §2 of
+// production-readiness.
+async function seedGroceryMerchant() {
+  console.log('Seeding grocery merchant...');
+
+  let merchant = await prisma.merchants.findFirst({
+    where: { name: 'Puregold Jr.' },
+  });
+
+  if (!merchant) {
+    merchant = await prisma.merchants.create({
+      data: {
+        name: 'Puregold Jr.',
+        category: 'Grocery',
+        delivery_fee: 5900n,
+        min_order: 30000n,
+        eta_minutes: 50,
+        is_open: true,
+      },
+    });
+    console.log(`  created merchant: ${merchant.name} (${merchant.id})`);
+  } else {
+    console.log(`  merchant already exists: ${merchant.name} (${merchant.id})`);
+  }
+
+  const groceryItems: Array<{ name: string; price: bigint; category: string }> =
+    [
+      { name: 'Sinandomeng Rice 5kg', price: 32500n, category: 'Pantry' },
+      {
+        name: 'Century Tuna Flakes in Oil',
+        price: 4200n,
+        category: 'Canned Goods',
+      },
+      { name: 'Nescafé Classic Twin Pack', price: 1500n, category: 'Beverages' },
+      { name: 'Fresh Eggs (dozen)', price: 11900n, category: 'Fresh' },
+      { name: 'Surf Powder 1kg', price: 9900n, category: 'Household' },
+    ];
+
+  for (const item of groceryItems) {
+    const existing = await prisma.menu_items.findFirst({
+      where: { merchant_id: merchant.id, name: item.name },
+    });
+    if (existing) {
+      console.log(`  menu item already exists: ${item.name}`);
+      continue;
+    }
+    await prisma.menu_items.create({
+      data: {
+        merchant_id: merchant.id,
+        name: item.name,
+        price: item.price,
+        category: item.category,
+        in_stock: true,
+      },
+    });
+    console.log(`  created menu item: ${item.name}`);
+  }
+}
+
 // The Merchant Panel discovers its store(s) through merchant_users (RLS
 // returns own links only) and cartman-server's accept/ready/reject guard
 // requires the same membership row — a merchant login without one sees
@@ -293,6 +353,7 @@ async function main() {
   await seedRider();
   const merchant = await seedMerchant();
   await seedMerchantUser(merchant.id);
+  await seedGroceryMerchant();
   console.log('Seed complete.');
 }
 

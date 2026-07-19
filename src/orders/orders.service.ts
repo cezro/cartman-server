@@ -6,7 +6,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { order_type, order_status, payment_method } from '@prisma/client';
+import {
+  order_type,
+  order_status,
+  payment_method,
+  Prisma,
+} from '@prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
@@ -33,6 +38,19 @@ const NEXT: Partial<Record<order_status, order_status>> = {
   picked_up: order_status.in_transit,
   in_transit: order_status.delivered,
 };
+
+// round(avg(stars), 2) twin for the rate_order RPC's aggregate recompute.
+// Computed from the exact integer sum/count (stars are small ints) so the
+// half-up rounding at x.xx5 boundaries matches Postgres round(numeric, 2);
+// `fallback` mirrors the RPC's coalesce (merchants 0, riders 5.0).
+function starAverage(
+  sum: number | null,
+  count: number,
+  fallback: number,
+): number {
+  if (sum == null || count === 0) return fallback;
+  return Math.round((sum * 100) / count) / 100;
+}
 
 async function nextRefNo(tx: {
   $queryRaw: <T = unknown>(
@@ -141,7 +159,16 @@ export class OrdersService {
   }
 
   async placeErrandOrder(customerId: string, data: any) {
-    const { errand_payload, notes } = data;
+    const { errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text } =
+      data;
+
+    // A pabili has to be handed to the customer somewhere — without a
+    // drop-off the order is unfulfillable (the DB twin's place_order accepts
+    // the same fields; same guard style as courier/ride).
+    if (!dropoff_lat || !dropoff_lng) {
+      throw new BadRequestException('Drop-off coordinates are required');
+    }
+
     const delivery_fee = 10000n; // ₱100 — errand base fee
     const delivery_payout = delivery_fee;
 
@@ -158,6 +185,9 @@ export class OrdersService {
           // them there would make them unclaimable forever.
           status: order_status.ready_for_pickup,
           ref_no,
+          dropoff_lat,
+          dropoff_lng,
+          dropoff_text,
           delivery_fee,
           delivery_payout,
           total: delivery_fee,
@@ -681,5 +711,111 @@ export class OrdersService {
       where: { id: orderId },
     });
     return this.serializeOrder(order!);
+  }
+
+  // POST /orders/:id/rating (cartman-server-endpoints.md §Ratings) — server
+  // twin of the rate_order RPC (20260719000200_order_ratings.sql). Same
+  // refusal map as the RPC: not-yours reads as not-found (404, like cancel),
+  // only delivered orders can be rated (409), at least one score (400), one
+  // rating per order — the order_ratings.order_id UNIQUE is the atomic gate,
+  // so a re-rate (including a concurrent double-submit) surfaces as P2002 and
+  // maps to 409, mirroring the RPC's unique_violation catch. The insert and
+  // the platform-owned merchants.rating / riders.rating recompute run in one
+  // transaction.
+  async rateOrder(
+    orderId: string,
+    customerId: string,
+    data: { merchant_stars?: number; rider_stars?: number; comment?: string },
+  ) {
+    const { merchant_stars, rider_stars, comment } = data;
+
+    const order = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    if (!order || order.customer_id !== customerId) {
+      throw new NotFoundException('Order not found');
+    }
+    if (order.status !== order_status.delivered) {
+      throw new ConflictException('Only delivered orders can be rated');
+    }
+    if (merchant_stars == null && rider_stars == null) {
+      throw new BadRequestException('Provide a merchant or rider rating');
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Like the RPC, merchant_id/rider_id snapshot the order's parties. A
+        // merchant-less order (errand/courier/ride/multi-stop) stores
+        // merchant_id null — a merchant_stars sent for one is stored inert
+        // and never feeds any merchant aggregate (the recompute below is
+        // gated on the order actually having a merchant).
+        const rating = await tx.order_ratings.create({
+          data: {
+            order_id: orderId,
+            customer_id: customerId,
+            merchant_id: order.merchant_id,
+            rider_id: order.assigned_rider_id,
+            merchant_stars: merchant_stars ?? null,
+            rider_stars: rider_stars ?? null,
+            comment: comment?.trim() || null,
+          },
+        });
+
+        // Recompute the platform-owned aggregates from the ratings table —
+        // round(avg(stars), 2) over non-null scores, with the RPC's coalesce
+        // fallbacks (merchants 0, riders 5.0). updateMany mirrors the RPC's
+        // plain UPDATE: zero matching rows is a no-op, not an error.
+        if (order.merchant_id != null && merchant_stars != null) {
+          const agg = await tx.order_ratings.aggregate({
+            where: {
+              merchant_id: order.merchant_id,
+              merchant_stars: { not: null },
+            },
+            _sum: { merchant_stars: true },
+            _count: { merchant_stars: true },
+          });
+          await tx.merchants.updateMany({
+            where: { id: order.merchant_id },
+            data: {
+              rating: starAverage(
+                agg._sum.merchant_stars,
+                agg._count.merchant_stars,
+                0,
+              ),
+            },
+          });
+        }
+        if (order.assigned_rider_id != null && rider_stars != null) {
+          const agg = await tx.order_ratings.aggregate({
+            where: {
+              rider_id: order.assigned_rider_id,
+              rider_stars: { not: null },
+            },
+            _sum: { rider_stars: true },
+            _count: { rider_stars: true },
+          });
+          await tx.riders.updateMany({
+            where: { id: order.assigned_rider_id },
+            data: {
+              rating: starAverage(
+                agg._sum.rider_stars,
+                agg._count.rider_stars,
+                5.0,
+              ),
+            },
+          });
+        }
+
+        return rating;
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Order already rated');
+      }
+      throw error;
+    }
   }
 }

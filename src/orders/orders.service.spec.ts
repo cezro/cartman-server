@@ -7,12 +7,12 @@ import {
 import { OrdersService } from './orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
-import { order_status, order_type } from '@prisma/client';
+import { order_status, order_type, Prisma } from '@prisma/client';
 
 describe('OrdersService', () => {
   let service: OrdersService;
   let prisma: {
-    merchants: { findUnique: jest.Mock };
+    merchants: { findUnique: jest.Mock; updateMany: jest.Mock };
     menu_items: { findUnique: jest.Mock };
     orders: {
       create: jest.Mock;
@@ -22,9 +22,10 @@ describe('OrdersService', () => {
       findMany: jest.Mock;
       count: jest.Mock;
     };
-    riders: { findUnique: jest.Mock };
+    riders: { findUnique: jest.Mock; updateMany: jest.Mock };
     rider_wallet_transactions: { findFirst: jest.Mock; create: jest.Mock };
     merchant_users: { findFirst: jest.Mock };
+    order_ratings: { create: jest.Mock; aggregate: jest.Mock };
     $transaction: jest.Mock;
     $queryRaw: jest.Mock;
   };
@@ -40,7 +41,7 @@ describe('OrdersService', () => {
     nextvalCounter = 0n;
 
     prisma = {
-      merchants: { findUnique: jest.fn() },
+      merchants: { findUnique: jest.fn(), updateMany: jest.fn() },
       menu_items: { findUnique: jest.fn() },
       orders: {
         create: jest.fn(),
@@ -50,9 +51,10 @@ describe('OrdersService', () => {
         findMany: jest.fn(),
         count: jest.fn().mockResolvedValue(0),
       },
-      riders: { findUnique: jest.fn() },
+      riders: { findUnique: jest.fn(), updateMany: jest.fn() },
       rider_wallet_transactions: { findFirst: jest.fn(), create: jest.fn() },
       merchant_users: { findFirst: jest.fn() },
+      order_ratings: { create: jest.fn(), aggregate: jest.fn() },
       $queryRaw: jest.fn().mockImplementation(() => {
         nextvalCounter += 1n;
         return Promise.resolve([{ nextval: nextvalCounter }]);
@@ -87,6 +89,8 @@ describe('OrdersService', () => {
       await service.placeErrandOrder('cust-1', {
         errand_payload: {},
         notes: '',
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
       });
 
       expect(prisma.orders.create).toHaveBeenCalledWith(
@@ -96,6 +100,48 @@ describe('OrdersService', () => {
           }) as Record<string, unknown>,
         }),
       );
+    });
+
+    it('placeErrandOrder stores the drop-off and the structured payload', async () => {
+      prisma.orders.create.mockResolvedValue({
+        id: 'order-1',
+        status: order_status.ready_for_pickup,
+      });
+
+      await service.placeErrandOrder('cust-1', {
+        errand_payload: {
+          items: ['Biogesic 500mg'],
+          store: 'Mercury Drug',
+          budget_centavos: 50000,
+        },
+        notes: 'Buy: Biogesic 500mg · Store: Mercury Drug',
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
+        dropoff_text: 'Home',
+      });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            dropoff_lat: 10.1,
+            dropoff_lng: 122.1,
+            dropoff_text: 'Home',
+            errand_payload: expect.objectContaining({
+              store: 'Mercury Drug',
+            }) as Record<string, unknown>,
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('placeErrandOrder rejects a missing drop-off (unfulfillable order)', async () => {
+      await expect(
+        service.placeErrandOrder('cust-1', {
+          errand_payload: {},
+          notes: '',
+        }),
+      ).rejects.toThrow('Drop-off coordinates are required');
+      expect(prisma.orders.create).not.toHaveBeenCalled();
     });
 
     it('placeCourierOrder creates with status ready_for_pickup', async () => {
@@ -475,6 +521,8 @@ describe('OrdersService', () => {
       const result = await service.placeErrandOrder('cust-1', {
         errand_payload: {},
         notes: '',
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
       });
 
       expect(prisma.$queryRaw).toHaveBeenCalled();
@@ -979,6 +1027,240 @@ describe('OrdersService', () => {
           ],
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('§Ratings — rateOrder (POST /orders/:id/rating)', () => {
+    const deliveredOrder = {
+      id: 'order-1',
+      customer_id: 'cust-1',
+      merchant_id: 'merchant-1',
+      assigned_rider_id: 'rider-1',
+      status: order_status.delivered,
+    };
+
+    beforeEach(() => {
+      prisma.orders.findUnique.mockResolvedValue(deliveredOrder);
+      prisma.order_ratings.create.mockImplementation(
+        (args: { data: Record<string, unknown> }) =>
+          Promise.resolve({ id: 'rating-1', ...args.data }),
+      );
+      // Post-insert aggregate state: the just-inserted rating is the only
+      // one → merchant avg 5, rider avg 4 (DB-twin happy-path values).
+      prisma.order_ratings.aggregate.mockResolvedValue({
+        _sum: { merchant_stars: 5, rider_stars: 4 },
+        _count: { merchant_stars: 1, rider_stars: 1 },
+      });
+      prisma.merchants.updateMany.mockResolvedValue({ count: 1 });
+      prisma.riders.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it('rates a delivered merchant order and recomputes both aggregates (DB-twin happy path)', async () => {
+      const result = await service.rateOrder('order-1', 'cust-1', {
+        merchant_stars: 5,
+        rider_stars: 4,
+        comment: 'Sarap, mabilis!',
+      });
+
+      expect(prisma.order_ratings.create).toHaveBeenCalledWith({
+        data: {
+          order_id: 'order-1',
+          customer_id: 'cust-1',
+          merchant_id: 'merchant-1',
+          rider_id: 'rider-1',
+          merchant_stars: 5,
+          rider_stars: 4,
+          comment: 'Sarap, mabilis!',
+        },
+      });
+      expect(prisma.merchants.updateMany).toHaveBeenCalledWith({
+        where: { id: 'merchant-1' },
+        data: { rating: 5 },
+      });
+      expect(prisma.riders.updateMany).toHaveBeenCalledWith({
+        where: { id: 'rider-1' },
+        data: { rating: 4 },
+      });
+      expect(result.merchant_stars).toBe(5);
+      expect(result.rider_stars).toBe(4);
+    });
+
+    it('recomputes aggregates as round(avg, 2) over non-null stars only', async () => {
+      prisma.order_ratings.aggregate.mockResolvedValue({
+        _sum: { merchant_stars: 13, rider_stars: 9 },
+        _count: { merchant_stars: 3, rider_stars: 2 },
+      });
+
+      await service.rateOrder('order-1', 'cust-1', {
+        merchant_stars: 4,
+        rider_stars: 4,
+      });
+
+      // 13/3 = 4.333… → 4.33; 9/2 = 4.5 — matches round(avg(stars), 2).
+      expect(prisma.order_ratings.aggregate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { merchant_id: 'merchant-1', merchant_stars: { not: null } },
+        }),
+      );
+      expect(prisma.order_ratings.aggregate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { rider_id: 'rider-1', rider_stars: { not: null } },
+        }),
+      );
+      expect(prisma.merchants.updateMany).toHaveBeenCalledWith({
+        where: { id: 'merchant-1' },
+        data: { rating: 4.33 },
+      });
+      expect(prisma.riders.updateMany).toHaveBeenCalledWith({
+        where: { id: 'rider-1' },
+        data: { rating: 4.5 },
+      });
+    });
+
+    it('a merchant-less order rates only the rider and never touches merchants', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        merchant_id: null,
+      });
+
+      await service.rateOrder('order-1', 'cust-1', {
+        rider_stars: 5,
+        comment: 'Salamat kuya!',
+      });
+
+      expect(prisma.order_ratings.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          merchant_id: null,
+          merchant_stars: null,
+          rider_stars: 5,
+        }) as Record<string, unknown>,
+      });
+      expect(prisma.merchants.updateMany).not.toHaveBeenCalled();
+      expect(prisma.riders.updateMany).toHaveBeenCalled();
+    });
+
+    it('merchant_stars on a merchant-less order is stored inert — no merchant aggregate (RPC parity)', async () => {
+      // The rate_order RPC does not reject merchant_stars here: the row keeps
+      // the score with merchant_id null, so it can never feed any merchant's
+      // aggregate. Mirror that exactly rather than inventing a 400.
+      prisma.orders.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        merchant_id: null,
+      });
+
+      await service.rateOrder('order-1', 'cust-1', {
+        merchant_stars: 4,
+        rider_stars: 5,
+      });
+
+      expect(prisma.order_ratings.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          merchant_id: null,
+          merchant_stars: 4,
+        }) as Record<string, unknown>,
+      });
+      expect(prisma.merchants.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('skips the rider aggregate when the order has no assigned rider (RPC parity)', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        assigned_rider_id: null,
+      });
+
+      await service.rateOrder('order-1', 'cust-1', {
+        merchant_stars: 3,
+        rider_stars: 5,
+      });
+
+      expect(prisma.riders.updateMany).not.toHaveBeenCalled();
+      expect(prisma.merchants.updateMany).toHaveBeenCalled();
+    });
+
+    it('trims the comment and stores blank as null (nullif(trim(…)) parity)', async () => {
+      await service.rateOrder('order-1', 'cust-1', {
+        rider_stars: 5,
+        comment: '   ',
+      });
+
+      expect(prisma.order_ratings.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          comment: null,
+        }) as Record<string, unknown>,
+      });
+    });
+
+    it('404s when the order does not exist', async () => {
+      prisma.orders.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.rateOrder('order-x', 'cust-1', { merchant_stars: 5 }),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.order_ratings.create).not.toHaveBeenCalled();
+    });
+
+    it("404s when the order belongs to another customer (doesn't leak existence)", async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        customer_id: 'someone-else',
+      });
+
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { merchant_stars: 5 }),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.order_ratings.create).not.toHaveBeenCalled();
+    });
+
+    it('409s an order that is not yet delivered', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        ...deliveredOrder,
+        status: order_status.in_transit,
+      });
+
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { merchant_stars: 5 }),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { merchant_stars: 5 }),
+      ).rejects.toThrow('Only delivered orders can be rated');
+      expect(prisma.order_ratings.create).not.toHaveBeenCalled();
+    });
+
+    it('400s when neither score is provided', async () => {
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { comment: 'no stars' }),
+      ).rejects.toThrow(BadRequestException);
+      await expect(service.rateOrder('order-1', 'cust-1', {})).rejects.toThrow(
+        'Provide a merchant or rider rating',
+      );
+      expect(prisma.order_ratings.create).not.toHaveBeenCalled();
+    });
+
+    it('409s a re-rate — the order_id UNIQUE surfaces as "Order already rated"', async () => {
+      prisma.order_ratings.create.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { merchant_stars: 1 }),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { merchant_stars: 1 }),
+      ).rejects.toThrow('Order already rated');
+      // The transaction died on the insert — no aggregate may be recomputed.
+      expect(prisma.merchants.updateMany).not.toHaveBeenCalled();
+      expect(prisma.riders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rethrows non-unique-violation errors untouched', async () => {
+      prisma.order_ratings.create.mockRejectedValue(new Error('db down'));
+
+      await expect(
+        service.rateOrder('order-1', 'cust-1', { merchant_stars: 5 }),
+      ).rejects.toThrow('db down');
     });
   });
 });

@@ -23,6 +23,7 @@ import {
   PlaceErrandOrderDto,
   PlaceMultiStopOrderDto,
   PlacePickupDropoffOrderDto,
+  RateOrderDto,
   UpdateOrderStatusDto,
 } from './dto/place-order.dto';
 
@@ -110,6 +111,17 @@ export class OrdersController {
     @Body() body: CancelOrderDto,
   ) {
     return this.ordersService.cancelOrder(id, user.id, body.reason);
+  }
+
+  // Rate & review (C-7.x) — POST defaults to 201 with the created rating.
+  @Post(':id/rating')
+  @Roles('customer')
+  rateOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: RateOrderDto,
+  ) {
+    return this.ordersService.rateOrder(id, user.id, body);
   }
 
   // Merchant operations

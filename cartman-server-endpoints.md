@@ -70,7 +70,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `GET /auth/me` | both apps | → `profiles` row + nested `rider` relation |
 | `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}]}` → order JSON |
 | `POST /orders/grocery` | customer | `{merchant_id, items:[…]}` → order JSON |
-| `POST /orders/errand` | customer | `{errand_payload, notes}` → order JSON |
+| `POST /orders/errand` | customer | `{errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text?}` → order JSON (400 without drop-off coords — a pabili is unfulfillable with nowhere to deliver) |
 | `POST /orders/courier` | customer | pickup/dropoff body (below) → order JSON |
 | `POST /orders/ride` | customer | pickup/dropoff body (below) → order JSON |
 | `POST /orders/multi-stop` | customer | `{stops:[…], notes?, payment?}` → order JSON, **201**. Done — see §1 |
@@ -306,7 +306,51 @@ Remaining follow-ups (2026-07-18 — client flips and DB parity are done):
 2. **Ops** — set `CORS_ORIGINS` for the deployed panel origin and the three
    `FCM_*` env vars from a Firebase service account; `supabase db push` the
    pending migrations (`20260714000000_handle_new_user_phone.sql`,
-   `20260717000100_cancel_order.sql`).
+   `20260717000100_cancel_order.sql`,
+   `20260719000200_order_ratings.sql` — the ratings route below needs it).
 3. ~~**Optional DB parity**~~ — done: `cancel_order(:id, :reason)` in
    `supabase/migrations/20260717000100_cancel_order.sql`, exercised by 6
    cases in `supabase/tests/merchant_panel.test.ts`.
+
+---
+
+## Ratings write path — `POST /orders/:id/rating` — **done**
+
+> **Built (2026-07-19):** `OrdersController.rateOrder` →
+> `OrdersService.rateOrder` (`RateOrderDto`, role `customer`). Same
+> structural deviation as §1–§7: a direct Prisma transaction that **matches
+> `rate_order`'s semantics** instead of invoking the RPC. Refusal map:
+> not-yours reads as not-found (**404**, like cancel); not `delivered` →
+> **409**; neither score → **400**; one rating per order — the
+> `order_ratings.order_id` UNIQUE is the atomic gate, so a re-rate
+> (including a concurrent double-submit) surfaces as P2002 → **409**
+> "Order already rated". The insert and the **`merchants.rating` /
+> `riders.rating` recompute (`round(avg(stars), 2)` over non-null scores,
+> coalesce 0 / 5.0) run in one transaction**; a merchant-less order stores
+> `merchant_id null`, so a `merchant_stars` sent for one is stored inert
+> and never feeds any merchant aggregate (RPC parity — the RPC doesn't
+> reject it either). Comment is trimmed, blank → null. Response: the
+> created `order_ratings` row, **201**. The `order_ratings` model is added
+> to `prisma/schema.prisma`; the table itself ships in cartman-mobile's
+> migration per the schema-header provisioning order (migrations first,
+> `prisma db push` second).
+
+Rate-&-review (C-7.x) has a DB contract to mirror, added the same
+twin-first way as `cancel_order`:
+`supabase/migrations/20260719000200_order_ratings.sql` (table + RLS +
+`rate_order` RPC), exercised by `supabase/tests/order_ratings.test.ts` (9 cases).
+
+- **Guard:** JWT; the caller must be the order's `customer_id`.
+- **Body:** `{ "merchant_stars"?: 1..5, "rider_stars"?: 1..5, "comment"?: string }`
+  — at least one score required.
+- **Behavior:** mirror the **`rate_order(:id, :merchant_stars, :rider_stars,
+  :comment)`** RPC. It enforces: order is `delivered` and owned by the caller;
+  one rating per order (re-rate → "order already rated", map to **409**); and it
+  **recomputes the platform-owned `merchants.rating` / `riders.rating`
+  aggregates** from the append-only `order_ratings` (never client-written).
+  Merchant-less orders (Pabili/ride/courier/multi-stop) pass `merchant_stars`
+  null and rate only the rider.
+- **Response:** the created rating summary. **201.**
+- **Client (MOBILE, still to wire):** navigate to `/rate` from a delivered order
+  (track screen + order history) and persist on submit via a `RatingRepository`
+  → this route. See `docs/production-readiness.md` §3.

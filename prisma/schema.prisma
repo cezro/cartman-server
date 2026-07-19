@@ -84,6 +84,8 @@ model profiles {
   device_tokens            device_tokens[]
   otp_codes                otp_codes[]
   merchant_users           merchant_users[]
+  ratings_given            order_ratings[]    @relation("customer_ratings")
+  ratings_received         order_ratings[]    @relation("rider_ratings")
 }
 
 // ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
@@ -126,6 +128,7 @@ model merchants {
   menu_items     menu_items[]
   orders         orders[]
   merchant_users merchant_users[]
+  order_ratings  order_ratings[]
 }
 
 model menu_items {
@@ -196,6 +199,7 @@ model orders {
   order_stops            order_stops[]
   rider_locations        rider_locations[]
   wallet_transactions    rider_wallet_transactions[]
+  order_rating           order_ratings?
 
   @@index([customer_id])
   @@index([assigned_rider_id])
@@ -236,6 +240,36 @@ model order_stops {
   order orders @relation(fields: [order_id], references: [id], onDelete: Cascade)
 
   @@index([order_id])
+}
+
+// ── order_ratings — rate & review, one per order (C-7.x) ────────────────
+// Mirrors cartman-mobile's supabase/migrations/20260719000200_order_ratings.sql
+// (table + RLS + rate_order RPC — the DB twin of POST /orders/:id/rating).
+// The 1..5 star range and the at-least-one-score rule are DB CHECK
+// constraints (not expressible here; the migration is the DDL source of
+// truth). merchants.rating / riders.rating are platform-owned aggregates
+// recomputed from these rows — never client-written. Note rider_id
+// references profiles (like orders.assigned_rider_id), not riders.
+
+model order_ratings {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id       String   @unique @db.Uuid
+  customer_id    String   @db.Uuid
+  merchant_id    String?  @db.Uuid
+  rider_id       String?  @db.Uuid
+  merchant_stars Int?
+  rider_stars    Int?
+  comment        String?
+  created_at     DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  order         orders     @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  customer      profiles   @relation("customer_ratings", fields: [customer_id], references: [id], onDelete: Cascade)
+  merchant      merchants? @relation(fields: [merchant_id], references: [id], onDelete: SetNull)
+  rider_profile profiles?  @relation("rider_ratings", fields: [rider_id], references: [id], onDelete: SetNull)
+
+  @@index([merchant_id])
+  @@index([rider_id])
 }
 
 // ── riders — rider state (R-4.2) ────────────────────────────────────────
