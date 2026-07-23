@@ -119,6 +119,10 @@ model merchants {
   is_open         Boolean  @default(true)
   image_url       String?
   promo_text      String?
+  // Store pin (WGS84) — customer-app "near you" sort; null = unknown.
+  // Mirrors supabase/migrations/20260723000100_merchant_geo.sql.
+  lat             Float?
+  lng             Float?
   // Weekly windows: [{"day":0-6,"open":"HH:MM","close":"HH:MM"}, …].
   // Informational in Phase 1 — is_open is still the single availability flag.
   operating_hours Json     @default("[]")

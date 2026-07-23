@@ -196,11 +196,22 @@ async function seedMerchant() {
         min_order: 10000n,
         eta_minutes: 25,
         is_open: true,
+        // Quiapo, Manila — real pin so "near you" sorting has data.
+        lat: 14.5995,
+        lng: 120.9842,
       },
     });
     console.log(`  created merchant: ${merchant.name} (${merchant.id})`);
   } else {
     console.log(`  merchant already exists: ${merchant.name} (${merchant.id})`);
+    // Existing row from a pre-geo seed — backfill the pin once.
+    if (merchant.lat == null || merchant.lng == null) {
+      merchant = await prisma.merchants.update({
+        where: { id: merchant.id },
+        data: { lat: 14.5995, lng: 120.9842 },
+      });
+      console.log('  backfilled store coordinates');
+    }
   }
 
   const menuItems: Array<{ name: string; price: bigint }> = [
@@ -251,11 +262,22 @@ async function seedGroceryMerchant() {
         min_order: 30000n,
         eta_minutes: 50,
         is_open: true,
+        // Paco, Manila — real pin so "near you" sorting has data.
+        lat: 14.5764,
+        lng: 120.9851,
       },
     });
     console.log(`  created merchant: ${merchant.name} (${merchant.id})`);
   } else {
     console.log(`  merchant already exists: ${merchant.name} (${merchant.id})`);
+    // Existing row from a pre-geo seed — backfill the pin once.
+    if (merchant.lat == null || merchant.lng == null) {
+      merchant = await prisma.merchants.update({
+        where: { id: merchant.id },
+        data: { lat: 14.5764, lng: 120.9851 },
+      });
+      console.log('  backfilled store coordinates');
+    }
   }
 
   const groceryItems: Array<{ name: string; price: bigint; category: string }> =
