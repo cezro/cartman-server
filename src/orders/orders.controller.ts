@@ -17,11 +17,13 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { order_status } from '@prisma/client';
 import {
+  CancelOrderDto,
   PlaceMerchantOrderDto,
   PlaceErrandOrderDto,
+  PlaceMultiStopOrderDto,
   PlacePickupDropoffOrderDto,
+  RateOrderDto,
   UpdateOrderStatusDto,
 } from './dto/place-order.dto';
 
@@ -86,6 +88,15 @@ export class OrdersController {
     return this.ordersService.placeRideOrder(user.id, data);
   }
 
+  @Post('multi-stop')
+  @Roles('customer')
+  placeMultiStopOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: PlaceMultiStopOrderDto,
+  ) {
+    return this.ordersService.placeMultiStopOrder(user.id, data);
+  }
+
   @Get('history')
   @Roles('customer')
   getHistory(@CurrentUser() user: AuthenticatedUser) {
@@ -94,21 +105,46 @@ export class OrdersController {
 
   @Patch(':id/cancel')
   @Roles('customer')
-  cancelOrder(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
-    return this.ordersService.cancelOrder(id, user.id);
+  cancelOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: CancelOrderDto,
+  ) {
+    return this.ordersService.cancelOrder(id, user.id, body.reason);
+  }
+
+  // Rate & review (C-7.x) — POST defaults to 201 with the created rating.
+  @Post(':id/rating')
+  @Roles('customer')
+  rateOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: RateOrderDto,
+  ) {
+    return this.ordersService.rateOrder(id, user.id, body);
   }
 
   // Merchant operations
   @Patch(':id/accept')
   @Roles('merchant', 'admin')
-  acceptOrder(@Param('id') id: string) {
-    return this.ordersService.updateStatus(id, order_status.preparing);
+  acceptOrder(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.ordersService.merchantAccept(id, user);
   }
 
   @Patch(':id/ready')
   @Roles('merchant', 'admin')
-  markReady(@Param('id') id: string) {
-    return this.ordersService.updateStatus(id, order_status.ready_for_pickup);
+  markReady(@CurrentUser() user: AuthenticatedUser, @Param('id') id: string) {
+    return this.ordersService.merchantMarkReady(id, user);
+  }
+
+  @Patch(':id/reject')
+  @Roles('merchant', 'admin')
+  rejectOrder(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: CancelOrderDto,
+  ) {
+    return this.ordersService.merchantReject(id, user, body.reason);
   }
 
   // Rider operations

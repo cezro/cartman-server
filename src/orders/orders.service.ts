@@ -1,10 +1,17 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { order_type, order_status } from '@prisma/client';
+import {
+  order_type,
+  order_status,
+  payment_method,
+  Prisma,
+} from '@prisma/client';
 import { LedgerService } from '../ledger/ledger.service';
 import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
@@ -31,6 +38,19 @@ const NEXT: Partial<Record<order_status, order_status>> = {
   picked_up: order_status.in_transit,
   in_transit: order_status.delivered,
 };
+
+// round(avg(stars), 2) twin for the rate_order RPC's aggregate recompute.
+// Computed from the exact integer sum/count (stars are small ints) so the
+// half-up rounding at x.xx5 boundaries matches Postgres round(numeric, 2);
+// `fallback` mirrors the RPC's coalesce (merchants 0, riders 5.0).
+function starAverage(
+  sum: number | null,
+  count: number,
+  fallback: number,
+): number {
+  if (sum == null || count === 0) return fallback;
+  return Math.round((sum * 100) / count) / 100;
+}
 
 async function nextRefNo(tx: {
   $queryRaw: <T = unknown>(
@@ -70,7 +90,7 @@ export class OrdersService {
     data: any,
     type: typeof order_type.food | typeof order_type.grocery,
   ) {
-    const { merchant_id, items } = data;
+    const { merchant_id, items, notes } = data;
     if (!items || items.length === 0) {
       throw new BadRequestException('Order must contain items');
     }
@@ -127,6 +147,7 @@ export class OrdersService {
           delivery_fee,
           delivery_payout,
           total,
+          notes,
           order_items: {
             create: orderItemsData,
           },
@@ -138,7 +159,16 @@ export class OrdersService {
   }
 
   async placeErrandOrder(customerId: string, data: any) {
-    const { errand_payload, notes } = data;
+    const { errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text } =
+      data;
+
+    // A pabili has to be handed to the customer somewhere — without a
+    // drop-off the order is unfulfillable (the DB twin's place_order accepts
+    // the same fields; same guard style as courier/ride).
+    if (!dropoff_lat || !dropoff_lng) {
+      throw new BadRequestException('Drop-off coordinates are required');
+    }
+
     const delivery_fee = 10000n; // ₱100 — errand base fee
     const delivery_payout = delivery_fee;
 
@@ -155,6 +185,9 @@ export class OrdersService {
           // them there would make them unclaimable forever.
           status: order_status.ready_for_pickup,
           ref_no,
+          dropoff_lat,
+          dropoff_lng,
+          dropoff_text,
           delivery_fee,
           delivery_payout,
           total: delivery_fee,
@@ -276,18 +309,105 @@ export class OrdersService {
     });
   }
 
+  async placeMultiStopOrder(
+    customerId: string,
+    data: {
+      stops: Array<{
+        seq: number;
+        kind: string;
+        label?: string;
+        lat: number;
+        lng: number;
+        payload?: Record<string, unknown> | null;
+      }>;
+      notes?: string;
+      payment?: payment_method;
+    },
+  ) {
+    const { stops, notes, payment } = data;
+
+    // seq must be contiguous from 0 (§1). Sorted first so clients may send
+    // stops in any array order — seq is the route order, not array order.
+    const ordered = [...stops].sort((a, b) => a.seq - b.seq);
+    if (ordered.some((stop, i) => stop.seq !== i)) {
+      throw new BadRequestException(
+        'Stop seq values must be contiguous starting from 0',
+      );
+    }
+
+    // Same base/per-km curve as courier, applied to the whole route (sum of
+    // consecutive legs).
+    let routeKm = 0;
+    for (let i = 1; i < ordered.length; i++) {
+      routeKm += haversineKm(
+        ordered[i - 1].lat,
+        ordered[i - 1].lng,
+        ordered[i].lat,
+        ordered[i].lng,
+      );
+    }
+    const delivery_fee = this.fareForDistance(routeKm);
+    const delivery_payout = delivery_fee;
+
+    const first = ordered[0];
+    const last = ordered[ordered.length - 1];
+
+    return this.prisma.$transaction(async (tx) => {
+      const ref_no = await nextRefNo(tx);
+      const order = await tx.orders.create({
+        data: {
+          customer_id: customerId,
+          type: order_type.multi_stop,
+          // Born ready_for_pickup like every other non-merchant order type
+          // (see placeErrandOrder) — there is no merchant prep step, and a
+          // `pending` multi-stop order would never surface in the rider feed.
+          status: order_status.ready_for_pickup,
+          ref_no,
+          // First/last stop mirrored into the flat pickup/dropoff columns so
+          // feed proximity scoring and list displays work without joining
+          // order_stops.
+          pickup_lat: first.lat,
+          pickup_lng: first.lng,
+          pickup_text: first.label ?? null,
+          dropoff_lat: last.lat,
+          dropoff_lng: last.lng,
+          dropoff_text: last.label ?? null,
+          delivery_fee,
+          delivery_payout,
+          total: delivery_fee,
+          notes,
+          payment,
+          order_stops: {
+            create: ordered.map((stop) => ({
+              seq: stop.seq,
+              kind: stop.kind,
+              label: stop.label ?? '',
+              lat: stop.lat,
+              lng: stop.lng,
+              payload: stop.payload ?? undefined,
+            })),
+          },
+        },
+        include: { order_stops: true },
+      });
+      return this.serializeOrder(order);
+    });
+  }
+
   private calcHaversineFare(
     pickupLat: number,
     pickupLng: number,
     dropoffLat: number,
     dropoffLng: number,
   ): bigint {
-    const distanceKm = haversineKm(
-      pickupLat,
-      pickupLng,
-      dropoffLat,
-      dropoffLng,
+    return this.fareForDistance(
+      haversineKm(pickupLat, pickupLng, dropoffLat, dropoffLng),
     );
+  }
+
+  // Fare curve shared by courier/ride (single leg) and multi-stop (whole
+  // route): ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢).
+  private fareForDistance(distanceKm: number): bigint {
     const BASE = 4000n;
     const PER_KM = 1200n;
     const MIN_FEE = 5000n;
@@ -309,12 +429,123 @@ export class OrdersService {
     return orders.map((order) => this.serializeOrder(order));
   }
 
-  async updateStatus(orderId: string, status: order_status) {
-    const order = await this.prisma.orders.update({
+  // Merchant Panel write path (cartman-server-endpoints.md §3): @Roles alone
+  // only proves the caller is *a* merchant, not a member of *this* order's
+  // store — RLS scopes what the panel can read, but the server write path
+  // must enforce membership itself. Admins bypass membership (they act on any
+  // store), everyone still goes through the status-transition check.
+  private async loadOrderForMerchantAction(
+    orderId: string,
+    actor: { id: string; role: string },
+  ) {
+    const order = await this.prisma.orders.findUnique({
       where: { id: orderId },
-      data: { status },
     });
-    return this.serializeOrder(order);
+    if (!order) throw new NotFoundException('Order not found');
+
+    if (actor.role !== 'admin') {
+      // Orders without a merchant (errand/courier/ride/multi-stop) have no
+      // store to be a member of — no merchant may act on them.
+      if (!order.merchant_id) {
+        throw new ForbiddenException('Not a member of this store');
+      }
+      const membership = await this.prisma.merchant_users.findFirst({
+        where: { user_id: actor.id, merchant_id: order.merchant_id },
+      });
+      if (!membership) {
+        throw new ForbiddenException('Not a member of this store');
+      }
+    }
+
+    return order;
+  }
+
+  async merchantAccept(orderId: string, actor: { id: string; role: string }) {
+    const order = await this.loadOrderForMerchantAction(orderId, actor);
+    if (order.status !== order_status.pending) {
+      throw new ConflictException('Order can no longer be accepted');
+    }
+    const updated = await this.prisma.orders.update({
+      where: { id: orderId },
+      data: { status: order_status.preparing },
+    });
+    return this.serializeOrder(updated);
+  }
+
+  async merchantMarkReady(
+    orderId: string,
+    actor: { id: string; role: string },
+  ) {
+    const order = await this.loadOrderForMerchantAction(orderId, actor);
+    if (order.status !== order_status.preparing) {
+      throw new ConflictException('Order is not being prepared');
+    }
+    const updated = await this.prisma.orders.update({
+      where: { id: orderId },
+      data: { status: order_status.ready_for_pickup },
+    });
+    return this.serializeOrder(updated);
+  }
+
+  // PATCH /orders/:id/reject (cartman-server-endpoints.md §2) — server-side
+  // twin of the merchant_reject_order RPC: pending|preparing → canceled with
+  // canceled_by='merchant', refusing once a rider is assigned (409). Unlike
+  // accept/ready's 403, non-membership here is a 404 ("not yours" reads the
+  // same as "not found"), matching the RPC's scoped-WHERE behavior.
+  async merchantReject(
+    orderId: string,
+    actor: { id: string; role: string },
+    reason?: string,
+  ) {
+    const order = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    if (actor.role !== 'admin') {
+      const membership = order.merchant_id
+        ? await this.prisma.merchant_users.findFirst({
+            where: { user_id: actor.id, merchant_id: order.merchant_id },
+          })
+        : null;
+      if (!membership) throw new NotFoundException('Order not found');
+    }
+
+    if (order.assigned_rider_id != null) {
+      throw new ConflictException(
+        'A rider is already assigned — the order can no longer be rejected',
+      );
+    }
+    if (
+      order.status !== order_status.pending &&
+      order.status !== order_status.preparing
+    ) {
+      throw new ConflictException('Order can no longer be rejected');
+    }
+
+    const result = await this.prisma.orders.updateMany({
+      where: {
+        id: orderId,
+        assigned_rider_id: null,
+        status: { in: [order_status.pending, order_status.preparing] },
+      },
+      data: {
+        status: order_status.canceled,
+        canceled_by: 'merchant',
+        canceled_reason: reason?.trim() || null,
+      },
+    });
+
+    // A rider claiming between the read above and this guarded update lands
+    // here rather than silently overwriting the claim.
+    if (result.count === 0) {
+      throw new ConflictException('Order can no longer be rejected');
+    }
+
+    const updated = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    return this.serializeOrder(updated!);
   }
 
   async claimOrder(orderId: string, riderId: string) {
@@ -362,6 +593,9 @@ export class OrdersService {
 
     const order = await this.prisma.orders.findUnique({
       where: { id: orderId },
+      // The claim response boots the rider's active screen — carry the line
+      // items and the multi-stop route (realtime rows never embed relations).
+      include: { order_items: true, order_stops: true },
     });
     return {
       ...this.serializeOrder(order!),
@@ -443,7 +677,18 @@ export class OrdersService {
     return this.serializeOrder(order);
   }
 
-  async cancelOrder(orderId: string, customerId: string) {
+  async cancelOrder(orderId: string, customerId: string, reason?: string) {
+    // Pre-read splits "not yours / not found" (404) from "too late" (409,
+    // mirroring merchant_reject_order's assigned-rider refusal). The guarded
+    // updateMany below remains the atomic gate — a rider claiming between
+    // the read and the update still lands in the 409 branch.
+    const existing = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    if (!existing || existing.customer_id !== customerId) {
+      throw new NotFoundException('Order not found');
+    }
+
     const result = await this.prisma.orders.updateMany({
       where: {
         id: orderId,
@@ -451,16 +696,126 @@ export class OrdersService {
         assigned_rider_id: null,
         status: { in: [order_status.pending, order_status.ready_for_pickup] },
       },
-      data: { status: order_status.canceled },
+      data: {
+        status: order_status.canceled,
+        canceled_by: 'customer',
+        canceled_reason: reason?.trim() || null,
+      },
     });
 
     if (result.count === 0) {
-      throw new BadRequestException('Order can no longer be cancelled');
+      throw new ConflictException('Order can no longer be cancelled');
     }
 
     const order = await this.prisma.orders.findUnique({
       where: { id: orderId },
     });
     return this.serializeOrder(order!);
+  }
+
+  // POST /orders/:id/rating (cartman-server-endpoints.md §Ratings) — server
+  // twin of the rate_order RPC (20260719000200_order_ratings.sql). Same
+  // refusal map as the RPC: not-yours reads as not-found (404, like cancel),
+  // only delivered orders can be rated (409), at least one score (400), one
+  // rating per order — the order_ratings.order_id UNIQUE is the atomic gate,
+  // so a re-rate (including a concurrent double-submit) surfaces as P2002 and
+  // maps to 409, mirroring the RPC's unique_violation catch. The insert and
+  // the platform-owned merchants.rating / riders.rating recompute run in one
+  // transaction.
+  async rateOrder(
+    orderId: string,
+    customerId: string,
+    data: { merchant_stars?: number; rider_stars?: number; comment?: string },
+  ) {
+    const { merchant_stars, rider_stars, comment } = data;
+
+    const order = await this.prisma.orders.findUnique({
+      where: { id: orderId },
+    });
+    if (!order || order.customer_id !== customerId) {
+      throw new NotFoundException('Order not found');
+    }
+    if (order.status !== order_status.delivered) {
+      throw new ConflictException('Only delivered orders can be rated');
+    }
+    if (merchant_stars == null && rider_stars == null) {
+      throw new BadRequestException('Provide a merchant or rider rating');
+    }
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Like the RPC, merchant_id/rider_id snapshot the order's parties. A
+        // merchant-less order (errand/courier/ride/multi-stop) stores
+        // merchant_id null — a merchant_stars sent for one is stored inert
+        // and never feeds any merchant aggregate (the recompute below is
+        // gated on the order actually having a merchant).
+        const rating = await tx.order_ratings.create({
+          data: {
+            order_id: orderId,
+            customer_id: customerId,
+            merchant_id: order.merchant_id,
+            rider_id: order.assigned_rider_id,
+            merchant_stars: merchant_stars ?? null,
+            rider_stars: rider_stars ?? null,
+            comment: comment?.trim() || null,
+          },
+        });
+
+        // Recompute the platform-owned aggregates from the ratings table —
+        // round(avg(stars), 2) over non-null scores, with the RPC's coalesce
+        // fallbacks (merchants 0, riders 5.0). updateMany mirrors the RPC's
+        // plain UPDATE: zero matching rows is a no-op, not an error.
+        if (order.merchant_id != null && merchant_stars != null) {
+          const agg = await tx.order_ratings.aggregate({
+            where: {
+              merchant_id: order.merchant_id,
+              merchant_stars: { not: null },
+            },
+            _sum: { merchant_stars: true },
+            _count: { merchant_stars: true },
+          });
+          await tx.merchants.updateMany({
+            where: { id: order.merchant_id },
+            data: {
+              rating: starAverage(
+                agg._sum.merchant_stars,
+                agg._count.merchant_stars,
+                0,
+              ),
+            },
+          });
+        }
+        if (order.assigned_rider_id != null && rider_stars != null) {
+          const agg = await tx.order_ratings.aggregate({
+            where: {
+              rider_id: order.assigned_rider_id,
+              rider_stars: { not: null },
+            },
+            _sum: { rider_stars: true },
+            _count: { rider_stars: true },
+          });
+          await tx.riders.updateMany({
+            where: { id: order.assigned_rider_id },
+            data: {
+              rating: starAverage(
+                agg._sum.rider_stars,
+                agg._count.rider_stars,
+                5.0,
+              ),
+            },
+          });
+        }
+
+        return rating;
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException('Order already rated');
+      }
+      throw error;
+    }
   }
 }

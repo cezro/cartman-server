@@ -1,7 +1,9 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
   IsArray,
   IsIn,
+  IsInt,
   IsLatitude,
   IsLongitude,
   IsNumber,
@@ -10,6 +12,8 @@ import {
   IsPositive,
   IsString,
   IsUUID,
+  Max,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -44,14 +48,20 @@ export class PlaceMerchantOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items!: OrderItemDto[];
+
+  // The cart's "note for the restaurant" — stored on orders.notes so the
+  // panel's order drawer shows it.
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 /** Body for POST /orders/errand. */
 export class PlaceErrandOrderDto {
-  // Mobile currently always sends `null` (see the OrderType.errand branch in
-  // supabase_repositories.dart) — the Pabili flow folds store/items/budget
-  // into `notes` instead of a structured payload. Kept loosely typed
-  // (object or null) since OrdersService just stores it as-is.
+  // Structured pabili payload built by the mobile flow —
+  // {items[], store?, budget_centavos, instructions?} — stored as-is on
+  // orders.errand_payload; orders.notes stays the human-readable rider
+  // summary.
   @IsOptional()
   @IsObject()
   errand_payload?: Record<string, unknown> | null;
@@ -59,6 +69,21 @@ export class PlaceErrandOrderDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  // Where the rider hands over the pabili. Required by OrdersService (same
+  // manual guard as courier/ride) — optional here so the service's clearer
+  // error message is the one clients surface.
+  @IsOptional()
+  @IsLatitude()
+  dropoff_lat?: number;
+
+  @IsOptional()
+  @IsLongitude()
+  dropoff_lng?: number;
+
+  @IsOptional()
+  @IsString()
+  dropoff_text?: string;
 }
 
 /** Body for POST /orders/courier and POST /orders/ride. */
@@ -97,6 +122,92 @@ export class PlacePickupDropoffOrderDto {
   @IsOptional()
   @IsString()
   recipient_phone?: string;
+}
+
+/** One stop in a multi-stop order (cartman-server-endpoints.md §1). */
+export class OrderStopDto {
+  @IsInt()
+  @Min(0)
+  seq!: number;
+
+  // Matches the DB contract for order_stops.kind ('pickup' | 'buy' |
+  // 'deliver', 20260630000100_schema.sql) — 'buy' is the Multi-Stop
+  // Builder's Pabili task tile.
+  @IsIn(['pickup', 'buy', 'deliver'])
+  kind!: 'pickup' | 'buy' | 'deliver';
+
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  @IsLatitude()
+  lat!: number;
+
+  @IsLongitude()
+  lng!: number;
+
+  @IsOptional()
+  @IsObject()
+  payload?: Record<string, unknown> | null;
+}
+
+/**
+ * Body for POST /orders/multi-stop. ≥2 stops; seq contiguity from 0 is a
+ * cross-field rule, so OrdersService checks it rather than the DTO.
+ */
+export class PlaceMultiStopOrderDto {
+  @IsArray()
+  @ArrayMinSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => OrderStopDto)
+  stops!: OrderStopDto[];
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  // Sent by the client for interface parity with the contract body; the DB
+  // column defaults to cod when omitted.
+  @IsOptional()
+  @IsIn(['cod', 'gcash', 'maya', 'card', 'cart_credits'])
+  payment?: 'cod' | 'gcash' | 'maya' | 'card' | 'cart_credits';
+}
+
+/**
+ * Body for PATCH /orders/:id/cancel and /orders/:id/reject. Both clients may
+ * send no body at all — `reason` is the only (optional) field; the service
+ * trims it and stores empty as null.
+ */
+export class CancelOrderDto {
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+/**
+ * Body for POST /orders/:id/rating (cartman-server-endpoints.md §Ratings).
+ * Each score is an optional 1..5 int; "at least one score" is a cross-field
+ * rule, so OrdersService checks it rather than the DTO (same split as
+ * multi-stop seq contiguity).
+ */
+export class RateOrderDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  merchant_stars?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(5)
+  rider_stars?: number;
+
+  // Trimmed by the service; blank stored as null (nullif(trim(…)) parity
+  // with the rate_order RPC).
+  @IsOptional()
+  @IsString()
+  comment?: string;
 }
 
 /** Body for PATCH /orders/:id/status. */
