@@ -93,6 +93,8 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `POST /profiles/me/device-tokens` | both apps | `{token, platform}` → 2xx (JWT-guarded) |
 | `DELETE /profiles/me/device-tokens/:token` | both apps | → 2xx |
 | `POST /storage/upload` | customer | multipart `file` + `path` field → `{publicUrl}`. Customer/rider self-scoped (§5) |
+| `GET /geo/search` | customer | `?q&lat?&lng?&limit?` → `{results:[{label, address, lat, lng}]}`. Address type-ahead. `q` under 3 chars → 400; `lat`+`lng` (both or neither) bias results locally. **Always 200 otherwise** — upstream failure returns `[]` |
+| `GET /geo/reverse` | customer | `?lat&lng` → `{result: {label, address, lat, lng} \| null}`. Fills the address text from a dropped pin. Always 200 |
 
 **Order JSON shape** (must match `order_as_json` in
 `supabase/migrations/20260630000200_functions.sql` so `Order.fromMap` parses it):
@@ -103,6 +105,21 @@ delivery_fee, discount, total, delivery_payout, created_at, items[], stops[]`.
 **pickup/dropoff body** (courier + ride):
 `{pickup_lat, pickup_lng, pickup_text, dropoff_lat, dropoff_lng, dropoff_text,
 notes}`.
+
+**Geocoding proxy** (`GET /geo/*`, `src/geo/`): the app never calls a geocoding
+provider directly. The token stays server-side, results are cached in-process
+(24h TTL, LRU) to stay inside the free tier, and the response shape above is
+**ours, not the upstream's** — so swapping providers is a server deploy, not an
+app-store release. Every upstream call is pinned to `country=ph`.
+
+*Fail-soft is part of the contract.* Upstream errors, timeouts, and an unset
+`MAPBOX_TOKEN` all return 200 with empty results, never a 5xx. The address form
+degrades to manual pin-drop; a customer who cannot save an address cannot order
+at all, so a broken geocoder must never take checkout down with it. The server
+boots fine with no token configured.
+
+Tiles deliberately do **not** go through here — dozens of requests per map pan,
+latency-sensitive, and the app's basemap (CARTO) needs no key at all.
 
 ---
 

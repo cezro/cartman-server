@@ -49,3 +49,10 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         value: noreply@cartmanph.com
+
+      # Secret (sk.*) Mapbox token for the /geo/* geocoding proxy. Distinct
+      # from the app's public tile token — and note the basemap itself uses
+      # keyless CARTO tiles, so this is the only map secret. Unset is safe:
+      # geocoding fails soft to empty results.
+      - key: MAPBOX_TOKEN
+        sync: false
