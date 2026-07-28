@@ -21,6 +21,18 @@ import { createClient, type User } from '@supabase/supabase-js';
 
 const SEED_PASSWORD = 'CartmanDev1!';
 
+/**
+ * Phone for the seeded demo customer.
+ *
+ * The default is deliberately unreachable — INT-13's live-OTP smoke test needs
+ * a real handset, but a real personal mobile number does not belong in the
+ * repo. Set `SEED_CUSTOMER_PHONE` in the local `.env` (git-ignored) to point
+ * the seed at one; every seed run upserts it, so whatever is set here wins over
+ * whatever is in the database.
+ */
+const SEED_CUSTOMER_PHONE =
+  process.env.SEED_CUSTOMER_PHONE ?? '+639170000001';
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -83,7 +95,7 @@ async function seedCustomer() {
     email: 'seed-customer@cartman.ph',
     fullName: 'Seed Customer',
     role: 'customer',
-    phone: '+639170000001',
+    phone: SEED_CUSTOMER_PHONE,
   });
 
   await prisma.profiles.upsert({
@@ -91,12 +103,12 @@ async function seedCustomer() {
     create: {
       id: user.id,
       full_name: 'Seed Customer',
-      phone: '+639170000001',
+      phone: SEED_CUSTOMER_PHONE,
       role: 'customer',
     },
     update: {
       full_name: 'Seed Customer',
-      phone: '+639170000001',
+      phone: SEED_CUSTOMER_PHONE,
       role: 'customer',
     },
   });
@@ -113,17 +125,17 @@ async function seedCustomerAddresses(userId: string) {
     {
       id: '30000000-0000-0000-0000-000000000101',
       label: 'Home',
-      text_address: '123 Eastwood Avenue, Bagumbayan, Quezon City',
-      lat: 14.587,
-      lng: 121.0814,
+      text_address: 'Lopez Jaena St, Jaro, Iloilo City',
+      lat: 10.7145,
+      lng: 122.5996,
       is_default: true,
     },
     {
       id: '30000000-0000-0000-0000-000000000102',
       label: 'Work',
-      text_address: '8th Ave, Bonifacio Global City, Taguig',
-      lat: 14.5487,
-      lng: 121.0508,
+      text_address: 'SM City Iloilo, Mandurriao, Iloilo City',
+      lat: 10.7128,
+      lng: 122.5474,
       is_default: false,
     },
   ];
@@ -196,9 +208,9 @@ async function seedMerchant() {
         min_order: 10000n,
         eta_minutes: 25,
         is_open: true,
-        // Quiapo, Manila — real pin so "near you" sorting has data.
-        lat: 14.5995,
-        lng: 120.9842,
+        // Iloilo City Proper — real pin so "near you" sorting has data.
+        lat: 10.6995,
+        lng: 122.5688,
       },
     });
     console.log(`  created merchant: ${merchant.name} (${merchant.id})`);
@@ -208,7 +220,7 @@ async function seedMerchant() {
     if (merchant.lat == null || merchant.lng == null) {
       merchant = await prisma.merchants.update({
         where: { id: merchant.id },
-        data: { lat: 14.5995, lng: 120.9842 },
+        data: { lat: 10.6995, lng: 122.5688 },
       });
       console.log('  backfilled store coordinates');
     }
@@ -262,9 +274,9 @@ async function seedGroceryMerchant() {
         min_order: 30000n,
         eta_minutes: 50,
         is_open: true,
-        // Paco, Manila — real pin so "near you" sorting has data.
-        lat: 14.5764,
-        lng: 120.9851,
+        // Mandurriao, Iloilo City — real pin so "near you" sorting has data.
+        lat: 10.715,
+        lng: 122.548,
       },
     });
     console.log(`  created merchant: ${merchant.name} (${merchant.id})`);
@@ -274,7 +286,7 @@ async function seedGroceryMerchant() {
     if (merchant.lat == null || merchant.lng == null) {
       merchant = await prisma.merchants.update({
         where: { id: merchant.id },
-        data: { lat: 14.5764, lng: 120.9851 },
+        data: { lat: 10.715, lng: 122.548 },
       });
       console.log('  backfilled store coordinates');
     }
