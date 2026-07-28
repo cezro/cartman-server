@@ -20,6 +20,12 @@ import Joi from 'joi';
  *    skips SMS entirely, so booting prod without a key must be an explicit
  *    opt-in, never an accident — see INT-13 in docs/go-live-gaps.md).
  *  - RESEND_API_KEY — optional for now (email OTP is a future integration).
+ *
+ * Deliberately optional everywhere, including production:
+ *  - MAPBOX_TOKEN — the geocoding proxy (GeoModule) fails soft to empty
+ *    results when it is unset, and the address form falls back to manual
+ *    pin-drop. Requiring it would let a missing map key block every order in
+ *    the system, which is a far worse failure than losing address search.
  */
 export function validateEnv(
   env: Record<string, string | undefined> = process.env,
@@ -47,6 +53,7 @@ export function validateEnv(
         ? Joi.string().required()
         : Joi.string().optional().allow(''),
     RESEND_API_KEY: Joi.string().optional().allow(''),
+    MAPBOX_TOKEN: Joi.string().optional().allow(''),
   }).unknown(true);
 
   const { error } = schema.validate(env, { abortEarly: false });
