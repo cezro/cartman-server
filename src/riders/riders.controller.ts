@@ -13,6 +13,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { CreateRiderDto } from './dto/create-rider.dto';
+import { OnboardRiderDto } from './dto/onboard-rider.dto';
 import { ToggleDutyDto } from './dto/toggle-duty.dto';
 import { LogTelemetryDto } from './dto/log-telemetry.dto';
 
@@ -28,6 +29,27 @@ export class RidersController {
     @Body() data: CreateRiderDto,
   ) {
     return this.ridersService.createRider(user.id, data);
+  }
+
+  /**
+   * Self-service rider onboarding — the only way a Google account can become a
+   * rider (see RidersService.onboardRider for why).
+   *
+   * Deliberately has NO @Roles(): the caller is by definition still role
+   * 'customer', so @Roles('rider') would make this unreachable. Authentication
+   * is still required (the controller-level JwtAuthGuard plus the global one),
+   * and the promoted id comes from the verified JWT via @CurrentUser — never
+   * from the body — so a caller can only ever promote themselves. This grants
+   * exactly what the email/password rider sign-up form already grants by
+   * self-declaring `role: 'rider'` in its signup metadata, and the resulting
+   * rider is unverified + off duty until an admin approves them.
+   */
+  @Post('onboard')
+  onboardRider(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() data: OnboardRiderDto,
+  ) {
+    return this.ridersService.onboardRider(user.id, data);
   }
 
   @Patch(':id/activate')

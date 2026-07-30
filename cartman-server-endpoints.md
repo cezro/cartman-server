@@ -54,6 +54,23 @@ next to `backend-schema.md` (the DB contract) on purpose.
   `set local role authenticated; set local request.jwt.claim.sub = <uid>` wrap
   is required — **do not** bypass the membership/ownership checks by running
   them as service role with no identity set.
+- **`POST /riders/onboard` is the one route with no `@Roles`** (authentication
+  still required). It's the sole path that can turn a signed-in non-rider into a
+  rider, and it exists because **Google sign-in cannot become a rider any other
+  way**: GoTrue won't let a client inject `raw_user_meta_data.role` during OAuth
+  the way the email/password sign-up form does, so `handle_new_user` provisions
+  every Google account as a plain `customer` with no `riders` row — and the rider
+  app's router guard refuses a session whose `riderSelf()` is null. Gating it on
+  `@Roles('rider')` would require the role being requested, i.e. be unreachable
+  by definition. It is **not** a privilege escalation: the promoted id comes from
+  the verified JWT (never the body), so a caller can only promote themselves, and
+  this grants exactly what the email/password rider sign-up form already grants
+  by self-declaring `role: 'rider'` in its signup metadata. The new rider is
+  created with schema defaults `is_verified=false` + `is_active=false`, so the
+  admin COD/permit approval gate (`POST /admin/verifications/:id/approve`) still
+  applies. Idempotent (a second call returns the existing row rather than 500ing
+  on the PK), and a `phone` already claimed by another profile → **409**
+  (`profiles.phone` is UNIQUE).
 
 ---
 
@@ -82,6 +99,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `GET /orders/feed` | rider | → `[{order: <order JSON>, score, distance_km, expires_at}]`; 403 when off-duty / locked-out (client shows `message`). `expires_at` = `created_at + FEED_ACCEPT_WINDOW_MINUTES` (default 5) — R-4.1 display urgency only, expired entries stay claimable. Entries embed `order_items` + `order_stops` |
 | `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC). Response embeds `order_items` + `order_stops` (boots the active screen) |
 | `PATCH /orders/:id/status` | rider | `{status}` → order JSON (`advance_order_status` RPC) |
+| `POST /riders/onboard` | rider | `{vehicle?, plate_no?, phone?}` → `riders` row. Promotes the **caller** (id from the JWT, never the body) to `role='rider'` and creates their `riders` row. **The only riders route with no `@Roles`** — see below |
 | `GET /riders/me/history` | rider | → `[order JSON]`, delivered, caller-scoped |
 | `PATCH /riders/me/duty` | rider | `{is_active: bool}` → `{}` (`set_duty` RPC) |
 | `GET /ledger/me/wallet` | rider | → `{balance: string}` (centavos; `rider_net_cash`) |
