@@ -176,3 +176,24 @@ describe('MapboxGeocoder.reverse', () => {
     expect(result).toBeNull();
   });
 });
+
+describe('MapboxGeocoder.snapToRoad', () => {
+  it('snaps land points via Mapbox Map Matching API and filters ocean coordinates', async () => {
+    const fakeMatchingResult = {
+      code: 'Ok',
+      tracepoints: [
+        { location: [121.9448, 10.7455], name: 'Real St' },
+      ],
+    };
+    const { impl, calls } = fakeFetch(fakeMatchingResult);
+
+    const results = await new MapboxGeocoder('sk.test', impl).snapToRoad([
+      { lat: 10.745, lng: 121.944 }, // Land point in San Jose
+      { lat: 10.745, lng: 121.900 }, // Water point in Sulu Sea
+    ]);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({ lat: 10.7455, lng: 121.9448 });
+    expect(calls[0]).toContain('https://api.mapbox.com/matching/v5/mapbox/driving/');
+  });
+});

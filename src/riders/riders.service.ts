@@ -1,10 +1,14 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { GeoService } from '../geo/geo.service';
 import { serializeOrder } from '../orders/serialize-order';
 
 @Injectable()
 export class RidersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly geoService: GeoService,
+  ) {}
 
   async createRider(userId: string, data: any) {
     return this.prisma.riders.create({
@@ -95,12 +99,16 @@ export class RidersService {
   async logTelemetry(riderId: string, locations: any[]) {
     if (!locations || locations.length === 0) return { count: 0 };
 
-    const data = locations.map((loc) => ({
+    // Snap incoming raw GPS fixes onto drivable roads & filter water coordinates
+    const snapped = await this.geoService.snapToRoad(locations);
+    if (snapped.length === 0) return { count: 0 };
+
+    const data = snapped.map((loc, idx) => ({
       rider_id: riderId,
       lat: loc.lat,
       lng: loc.lng,
-      order_id: loc.order_id,
-      recorded_at: loc.recorded_at ? new Date(loc.recorded_at) : new Date(),
+      order_id: locations[idx]?.order_id,
+      recorded_at: locations[idx]?.recorded_at ? new Date(locations[idx].recorded_at) : new Date(),
     }));
 
     return this.prisma.rider_locations.createMany({
