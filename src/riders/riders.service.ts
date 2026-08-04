@@ -99,16 +99,12 @@ export class RidersService {
   async logTelemetry(riderId: string, locations: any[]) {
     if (!locations || locations.length === 0) return { count: 0 };
 
-    // Snap incoming raw GPS fixes onto drivable roads & filter water coordinates
-    const snapped = await this.geoService.snapToRoad(locations);
-    if (snapped.length === 0) return { count: 0 };
-
-    const data = snapped.map((loc, idx) => ({
+    const data = locations.map((loc) => ({
       rider_id: riderId,
       lat: loc.lat,
       lng: loc.lng,
-      order_id: locations[idx]?.order_id,
-      recorded_at: locations[idx]?.recorded_at ? new Date(locations[idx].recorded_at) : new Date(),
+      order_id: loc.order_id,
+      recorded_at: loc.recorded_at ? new Date(loc.recorded_at) : new Date(),
     }));
 
     return this.prisma.rider_locations.createMany({

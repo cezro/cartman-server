@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { GeoPlace } from './dto/geo.dto';
-import { type Geocoder, isWaterCoordinate } from './geocoder';
+import type { Geocoder } from './geocoder';
 import { GeoCache, forwardCacheKey, reverseCacheKey } from './geo-cache';
 
 /** DI token for the active geocoding backend. Null when none is configured. */
@@ -113,31 +113,7 @@ export class GeoService {
     }
   }
 
-  /**
-   * Snaps a batch of telemetry coordinates to drivable roads and filters out water bodies.
-   * Fail-soft: if upstream geocoder fails or is unset, returns non-water land coordinates.
-   */
-  async snapToRoad(
-    locations: Array<{ lat: number; lng: number }>,
-  ): Promise<Array<{ lat: number; lng: number }>> {
-    if (!locations || locations.length === 0) return [];
 
-    // Filter water coordinates
-    const landLocations = locations.filter(
-      (loc) => typeof loc.lat === 'number' && typeof loc.lng === 'number' && !isWaterCoordinate(loc.lat, loc.lng),
-    );
-
-    if (!this.geocoder || landLocations.length === 0) {
-      return landLocations;
-    }
-
-    try {
-      return await this.geocoder.snapToRoad(landLocations);
-    } catch (err) {
-      this.logUpstreamFailure('snapToRoad', err);
-      return landLocations;
-    }
-  }
 
   /**
    * Cache hit rates, for answering "is the cache earning its keep" without

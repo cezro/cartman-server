@@ -28,14 +28,10 @@ export interface Geocoder {
   }): Promise<GeoPlace[]>;
 
   reverse(params: { lat: number; lng: number }): Promise<GeoPlace | null>;
-
-  snapToRoad(
-    locations: Array<{ lat: number; lng: number }>,
-  ): Promise<Array<{ lat: number; lng: number }>>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mapbox Geocoding v6 & Map Matching v5
+// Mapbox Geocoding v6
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The slice of Mapbox's v6 feature object we actually read. */
@@ -52,16 +48,8 @@ interface MapboxV6Response {
   features?: MapboxV6Feature[];
 }
 
-interface MapboxMatchResponse {
-  code?: string;
-  tracepoints?: Array<{
-    location?: [number, number];
-    name?: string;
-  } | null>;
-}
-
 /**
- * Mapbox Geocoding & Map Matching.
+ * Mapbox Geocoding v6.
  *
  * Uses a **secret** (`sk.*`) token that lives only in the server environment —
  * never in `schema.prisma`, never in the APK. This is a different token from
@@ -97,7 +85,7 @@ export class MapboxGeocoder implements Geocoder {
       );
     }
 
-    const body = await this.get<MapboxV6Response>(url);
+    const body = await this.get(url);
     return (body.features ?? [])
       .map((f) => toPlace(f))
       .filter((p): p is GeoPlace => p !== null);
@@ -114,56 +102,12 @@ export class MapboxGeocoder implements Geocoder {
     url.searchParams.set('country', GEO_COUNTRY);
     url.searchParams.set('access_token', this.token);
 
-    const body = await this.get<MapboxV6Response>(url);
+    const body = await this.get(url);
     const first = (body.features ?? [])[0];
     return first ? toPlace(first) : null;
   }
 
-  /**
-   * Snaps a trace of telemetry coordinates onto the Mapbox driving road network,
-   * rejecting points that fall into bodies of water or unnavigable terrain.
-   */
-  async snapToRoad(
-    locations: Array<{ lat: number; lng: number }>,
-  ): Promise<Array<{ lat: number; lng: number }>> {
-    if (!locations || locations.length === 0) return [];
-
-    // Filter out water coordinates prior to Map Matching call
-    const landLocations = locations.filter((loc) => !isWaterCoordinate(loc.lat, loc.lng));
-    if (landLocations.length === 0) return [];
-
-    const coordString = landLocations
-      .map((loc) => `${loc.lng},${loc.lat}`)
-      .join(';');
-
-    const url = new URL(
-      `https://api.mapbox.com/matching/v5/mapbox/driving/${encodeURIComponent(coordString)}`,
-    );
-    url.searchParams.set('access_token', this.token);
-    url.searchParams.set('geometries', 'geojson');
-
-    try {
-      const body = await this.get<MapboxMatchResponse>(url);
-      if (body.code === 'Ok' && Array.isArray(body.tracepoints)) {
-        const snapped: Array<{ lat: number; lng: number }> = [];
-        body.tracepoints.forEach((tp, idx) => {
-          if (tp && Array.isArray(tp.location) && tp.location.length >= 2) {
-            snapped.push({ lat: tp.location[1], lng: tp.location[0] });
-          } else if (landLocations[idx]) {
-            // Fallback to original land coordinate if tracepoint match missed
-            snapped.push(landLocations[idx]);
-          }
-        });
-        return snapped;
-      }
-    } catch (err) {
-      this.logger.warn(`Map Matching failed soft: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    return landLocations;
-  }
-
-  private async get<T = any>(url: URL): Promise<T> {
+  private async get(url: URL): Promise<MapboxV6Response> {
     const res = await this.fetchImpl(url.toString(), {
       signal: AbortSignal.timeout(GEO_TIMEOUT_MS),
     });
@@ -174,19 +118,8 @@ export class MapboxGeocoder implements Geocoder {
       );
       throw new Error(`Mapbox responded ${res.status}`);
     }
-    return (await res.json()) as T;
+    return (await res.json()) as MapboxV6Response;
   }
-}
-
-/**
- * Checks if a coordinate falls in a known body of water (e.g. Sulu Sea west of San Jose de Buenavista coast).
- */
-export function isWaterCoordinate(lat: number, lng: number): boolean {
-  // San Jose de Buenavista coastal threshold (points west of 121.9380° E in Antique region are in the ocean)
-  if (lat >= 10.70 && lat <= 10.80 && lng < 121.9380) {
-    return true;
-  }
-  return false;
 }
 
 /**
