@@ -43,6 +43,22 @@ export class SupabaseAdminService {
     return this.client.auth.admin.getUserById(id);
   }
 
+  /**
+   * Permanently removes an auth user (L5 — the account-deletion sweep).
+   *
+   * This is the only thing that actually invalidates the credentials:
+   * `delete_my_account()` tombstones the profile, but the login keeps working
+   * until this runs. `profiles` has no FK to `auth.users`, so the tombstone is
+   * left standing on purpose — `orders.customer_id` references it with ON
+   * DELETE RESTRICT because those rows are the merchant's books.
+   */
+  deleteUser(id: string): Promise<{
+    data: { user: User | null };
+    error: { message: string; status?: number } | null;
+  }> {
+    return this.client.auth.admin.deleteUser(id);
+  }
+
   /** Generates a password-recovery action link for the given email. */
   generateLink(params: { type: 'recovery'; email: string }): Promise<{
     data: { properties: { action_link: string } | null };

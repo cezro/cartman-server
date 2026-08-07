@@ -59,8 +59,46 @@ Verified: **365 tests green, 37 suites** (was 360); `npm run build` clean.
 identical to the count on `e0a1471`. The five new tests were mutation-checked —
 removing the write makes three of them fail.
 
-Still open here, in the doc's own order: §1 (L3 push), §2 (L5 sweep — the
-schema is ready for it now), §5 (H10), §6 (H17), §7 (I8).
+**§2 (L5) is done.** `AccountSweepService` (`src/accounts/`) runs hourly via
+`@nestjs/schedule`, deletes the `auth.users` row behind every tombstoned
+profile, and stamps `profiles.auth_deleted_at`.
+
+The sweep this doc sketched would not have terminated. **`profiles` has no
+foreign key to `auth.users`** — verified against the live database — so
+deleting the auth row leaves the tombstone standing, and
+`select id from profiles where deleted_at is not null` keeps returning the same
+accounts forever. Nor can the tombstone be removed: `orders.customer_id`
+references it `ON DELETE RESTRICT`, deliberately, because those rows are the
+merchant's books. So it needed a marker of its own —
+`20260807000100_account_deletion_sweep.sql`, applied and verified on
+CartmanPH. `auth_deleted_at` is stamped only *after* the delete is confirmed,
+so a crash between the two retries rather than stranding live credentials, and
+an already-absent user counts as swept rather than as an hourly error forever.
+
+**§1 (L3) — the transport is done; the triggers are not.** `push-send` now
+does real FCM HTTP v1: service-account JWT (RS256) → OAuth2 token, cached until
+60s before expiry → `messages:send` per token, plus pruning of tokens FCM
+reports as `UNREGISTERED` / `INVALID_ARGUMENT`, and only those (a 5xx or a
+quota error is retryable, and pruning on it would silently unsubscribe a
+working device). With any credential missing it still answers 200 with
+`sent: 0` and a preview, so callers can be wired before the creds exist.
+The crypto is covered by `supabase/functions/_shared/fcm.test.ts` — 7 Deno
+tests, no Firebase account needed; it generates a throwaway RSA key and
+verifies the assertion against its own public half.
+
+**What is still missing for L3 is that nothing calls `push-send`.** There is no
+caller anywhere in either repo — not the server, not a DB trigger, not the
+apps. So the events in §1's table still fire into silence even once
+`FCM_PROJECT_ID` / `FCM_CLIENT_EMAIL` / `FCM_PRIVATE_KEY` are set. Note the two
+approval events (rider approved, store approved) do **not** pass through
+cartman-server at all — the panel calls `admin_set_rider_verified` /
+`admin_set_merchant_verified` directly over Supabase — so those have to be
+driven from the database (a trigger on `verification_events` using `pg_net`),
+not from this codebase. Order lifecycle events *do* pass through here and can
+call `push-send` from `OrdersService`.
+
+Still open here, in the doc's own order: §1's **triggers**, §5 (H10), §6 (H17),
+§7 (I8).
 
 ---
 

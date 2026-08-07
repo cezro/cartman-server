@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR, APP_FILTER } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { UserOrIpThrottlerGuard } from './common/user-or-ip-throttler.guard';
 import { PrismaModule } from './prisma/prisma.module';
@@ -16,6 +17,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { StorageModule } from './storage/storage.module';
 import { GeoModule } from './geo/geo.module';
 import { AdminModule } from './admin/admin.module';
+import { AccountsModule } from './accounts/accounts.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { LoggingInterceptor } from './common/logging.interceptor';
@@ -24,6 +26,9 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    // Drives the hourly account-deletion sweep (L5). Nothing else is scheduled
+    // yet; the sweep is the one job that has to run without a client asking.
+    ScheduleModule.forRoot(),
     // Global defense-in-depth rate limit: 200 req/min per user (or per IP on
     // @Public routes) — see UserOrIpThrottlerGuard for why the key is the
     // user id, not the IP. 200/min sits comfortably above the busiest real
@@ -45,6 +50,7 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
     StorageModule,
     GeoModule,
     AdminModule,
+    AccountsModule,
   ],
   controllers: [AppController],
   providers: [

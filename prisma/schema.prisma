@@ -93,6 +93,12 @@ model profiles {
   deleted_at      DateTime? @db.Timestamptz()
   deletion_reason String?
 
+  // Stamped by the account-deletion sweep once the auth.users row is confirmed
+  // gone. Null while the profile is tombstoned but the credentials still work.
+  // `profiles` has no FK to auth.users, so this is the only thing that tells
+  // the sweep it is finished with a row (20260807000100).
+  auth_deleted_at DateTime? @db.Timestamptz()
+
   // Relations
   addresses                addresses[]
   orders_as_customer       orders[]           @relation("customer_orders")
