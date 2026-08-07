@@ -44,6 +44,17 @@ enum order_type {
   multi_stop
 }
 
+// How the rider should hand the order over (20260803000300 in cartman-mobile).
+// An enum rather than free text because the rider screen renders it as an
+// instruction to act on; `orders.dropoff_note` carries the specifics
+// ("green gate, second floor").
+enum dropoff_instruction {
+  hand_to_me
+  leave_at_door
+  meet_at_gate
+  meet_outside
+}
+
 enum payment_method {
   cod
   gcash
@@ -75,6 +86,12 @@ model profiles {
   // /bypass-auth). Distinct from riders.is_active, which is duty on/off.
   suspended       Boolean  @default(false)
   created_at      DateTime @default(now()) @db.Timestamptz()
+
+  // Account deletion (H13/L5). `delete_my_account()` tombstones the profile
+  // and stamps these; the auth.users row still has to be swept server-side
+  // with the service role, or the credentials keep working.
+  deleted_at      DateTime? @db.Timestamptz()
+  deletion_reason String?
 
   // Relations
   addresses                addresses[]
@@ -172,6 +189,11 @@ model orders {
   dropoff_lat  Float?
   dropoff_lng  Float?
   dropoff_text String?
+
+  // How to hand it over, and the free-text specifics. NOT NULL with a default
+  // in the DB, so an order that says nothing still means hand-it-to-me.
+  dropoff_instruction dropoff_instruction @default(hand_to_me)
+  dropoff_note        String?
 
   // Money (centavos)
   subtotal        BigInt @default(0)

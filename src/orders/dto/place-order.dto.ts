@@ -54,6 +54,38 @@ export class PlaceMerchantOrderDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  // I3b — how the rider hands it over. The client omits both keys entirely
+  // when the customer left the default, so an order that says nothing still
+  // means hand_to_me (the DB column is NOT NULL with that default).
+  //
+  // Until these were listed here the global ValidationPipe's `whitelist: true`
+  // stripped them silently — the client sent them, the server dropped them,
+  // and the customer's choice evaporated with no error on either side.
+  @IsOptional()
+  @IsIn(['hand_to_me', 'leave_at_door', 'meet_at_gate', 'meet_outside'])
+  dropoff_instruction?:
+    'hand_to_me' | 'leave_at_door' | 'meet_at_gate' | 'meet_outside';
+
+  @IsOptional()
+  @IsString()
+  dropoff_note?: string;
+
+  // I2 — a genuine per-order drop-off, so ordering from school and delivering
+  // home no longer has to promote that address to default. Optional: when the
+  // client omits them OrdersService falls back to the customer's default
+  // address, which is what every food order relies on today.
+  @IsOptional()
+  @IsLatitude()
+  dropoff_lat?: number;
+
+  @IsOptional()
+  @IsLongitude()
+  dropoff_lng?: number;
+
+  @IsOptional()
+  @IsString()
+  dropoff_text?: string;
 }
 
 /** Body for POST /orders/errand. */

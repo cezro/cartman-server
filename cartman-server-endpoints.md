@@ -85,8 +85,8 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `POST /auth/send-otp` | customer | `{phone}` → `{}` (429 rate-limit, 502 SMS fail) |
 | `POST /auth/verify-otp` | customer | `{phone, code}` → `{verified: bool}`; on true, sets `profiles.phone_verified` |
 | `GET /auth/me` | both apps | → `profiles` row + nested `rider` relation |
-| `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}]}` → order JSON |
-| `POST /orders/grocery` | customer | `{merchant_id, items:[…]}` → order JSON |
+| `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}], notes?, dropoff_instruction?, dropoff_note?, dropoff_lat?, dropoff_lng?, dropoff_text?}` → order JSON. Drop-off resolves per-order when coords are sent (I2), else from the customer's **default saved address**; 400 when they have none, since the order would be undeliverable. `dropoff_instruction` omitted ⇒ DB default `hand_to_me` (I3b) |
+| `POST /orders/grocery` | customer | same body and drop-off rules as `/orders/food` → order JSON |
 | `POST /orders/errand` | customer | `{errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text?}` → order JSON (400 without drop-off coords — a pabili is unfulfillable with nowhere to deliver) |
 | `POST /orders/courier` | customer | pickup/dropoff body (below) → order JSON |
 | `POST /orders/ride` | customer | pickup/dropoff body (below) → order JSON |

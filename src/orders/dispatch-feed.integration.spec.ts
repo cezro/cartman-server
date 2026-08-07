@@ -105,6 +105,19 @@ function makeFakePrisma() {
       findUnique: ({ where }: { where: Row }) =>
         Promise.resolve(where.id === menuItem.id ? menuItem : null),
     },
+    addresses: {
+      // Food/grocery orders resolve their drop-off from the customer's
+      // default saved address; every fixture customer has one.
+      findFirst: () =>
+        Promise.resolve({
+          id: 'addr-1',
+          label: 'Home',
+          text_address: 'Lopez Jaena St, Jaro, Iloilo City',
+          lat: 10.7145,
+          lng: 122.5996,
+          is_default: true,
+        }),
+    },
     merchant_users: {
       // 'store-owner' is a member of the one fake store; nobody else is.
       findFirst: ({ where }: { where: Row }) =>

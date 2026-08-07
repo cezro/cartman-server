@@ -15,6 +15,7 @@ import {
 import { LedgerService } from '../ledger/ledger.service';
 import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
+import type { PlaceMerchantOrderDto } from './dto/place-order.dto';
 
 // -₱2,000 in centavos — mirrors LedgerService's LOCK_FLOOR / accept_order() RPC.
 export const WALLET_LOCK_FLOOR = -200_000n;
@@ -77,20 +78,32 @@ export class OrdersService {
     return serializeOrder(order);
   }
 
-  async placeFoodOrder(customerId: string, data: any) {
+  async placeFoodOrder(customerId: string, data: PlaceMerchantOrderDto) {
     return this.placeMerchantOrder(customerId, data, order_type.food);
   }
 
-  async placeGroceryOrder(customerId: string, data: any) {
+  async placeGroceryOrder(customerId: string, data: PlaceMerchantOrderDto) {
     return this.placeMerchantOrder(customerId, data, order_type.grocery);
   }
 
+  // Typed against the DTO the controller already validates, rather than `any`
+  // — the drop-off resolution below decides whether an order is deliverable,
+  // which is not a thing to work out from an untyped bag.
   private async placeMerchantOrder(
     customerId: string,
-    data: any,
+    data: PlaceMerchantOrderDto,
     type: typeof order_type.food | typeof order_type.grocery,
   ) {
-    const { merchant_id, items, notes } = data;
+    const {
+      merchant_id,
+      items,
+      notes,
+      dropoff_instruction,
+      dropoff_note,
+      dropoff_lat,
+      dropoff_lng,
+      dropoff_text,
+    } = data;
     if (!items || items.length === 0) {
       throw new BadRequestException('Order must contain items');
     }
@@ -102,7 +115,10 @@ export class OrdersService {
       if (!merchant) throw new BadRequestException('Merchant not found');
 
       let subtotal = 0n;
-      const orderItemsData = [];
+      // Unchecked variant: these rows carry the `menu_item_id` FK directly
+      // rather than a nested relation connect.
+      const orderItemsData: Prisma.order_itemsUncheckedCreateWithoutOrderInput[] =
+        [];
 
       for (const item of items) {
         const menuItem = await tx.menu_items.findUnique({
@@ -126,7 +142,9 @@ export class OrdersService {
           name: menuItem.name,
           qty: item.qty,
           unit_price: menuItem.price,
-          modifiers: item.modifiers || [],
+          // The DTO keeps modifiers as `unknown[]` (the client's shape is not
+          // fixed yet); Prisma wants a JSON input value for the jsonb column.
+          modifiers: (item.modifiers ?? []) as Prisma.InputJsonValue,
         });
       }
 
@@ -134,6 +152,37 @@ export class OrdersService {
       const delivery_payout = delivery_fee; // rider gets full delivery fee (v1)
       const total = subtotal + delivery_fee;
       const ref_no = await nextRefNo(tx);
+
+      // Where the rider actually takes it. Food and grocery were the only
+      // order types that never wrote a drop-off — errand, courier, ride and
+      // multi-stop all do — so a live food order reached the feed with
+      // dropoff_lat/lng/text all null and the rider's active screen, which
+      // renders the destination only `if (order.dropoffText != null)`, showed
+      // them nowhere to go.
+      //
+      // A per-order drop-off (I2) wins when the client sends one; otherwise
+      // resolve the customer's default saved address, which is what checkout
+      // has always assumed happens here.
+      let resolvedLat = dropoff_lat;
+      let resolvedLng = dropoff_lng;
+      let resolvedText = dropoff_text;
+      if (resolvedLat == null || resolvedLng == null) {
+        const fallback = await tx.addresses.findFirst({
+          where: { user_id: customerId },
+          orderBy: [{ is_default: 'desc' }, { created_at: 'asc' }],
+        });
+        // An order with no destination is unfulfillable, and the merchant
+        // would have cooked it before anyone noticed. Checkout already
+        // requires a default address, so this is a guard, not a new gate.
+        if (!fallback) {
+          throw new BadRequestException(
+            'Add a delivery address before placing an order',
+          );
+        }
+        resolvedLat = fallback.lat;
+        resolvedLng = fallback.lng;
+        resolvedText = resolvedText ?? fallback.text_address;
+      }
 
       const order = await tx.orders.create({
         data: {
@@ -148,6 +197,13 @@ export class OrdersService {
           delivery_payout,
           total,
           notes,
+          dropoff_lat: resolvedLat,
+          dropoff_lng: resolvedLng,
+          dropoff_text: resolvedText,
+          // Undefined leaves the DB default (hand_to_me) in place, so a body
+          // that omits these is byte-for-byte the order it always was.
+          dropoff_instruction,
+          dropoff_note,
           order_items: {
             create: orderItemsData,
           },

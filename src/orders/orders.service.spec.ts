@@ -22,6 +22,7 @@ describe('OrdersService', () => {
       findMany: jest.Mock;
       count: jest.Mock;
     };
+    addresses: { findFirst: jest.Mock };
     riders: { findUnique: jest.Mock; updateMany: jest.Mock };
     rider_wallet_transactions: { findFirst: jest.Mock; create: jest.Mock };
     merchant_users: { findFirst: jest.Mock };
@@ -50,6 +51,21 @@ describe('OrdersService', () => {
         findUnique: jest.fn(),
         findMany: jest.fn(),
         count: jest.fn().mockResolvedValue(0),
+      },
+      // Food/grocery orders resolve their drop-off from the customer's
+      // default saved address when the body carries none. Every customer in
+      // these fixtures has one; the "no address at all" case is asserted
+      // explicitly in 2.5.
+      addresses: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'addr-1',
+          user_id: 'customer-1',
+          label: 'Home',
+          text_address: 'Lopez Jaena St, Jaro, Iloilo City',
+          lat: 10.7145,
+          lng: 122.5996,
+          is_default: true,
+        }),
       },
       riders: { findUnique: jest.fn(), updateMany: jest.fn() },
       rider_wallet_transactions: { findFirst: jest.fn(), create: jest.fn() },
@@ -249,6 +265,116 @@ describe('OrdersService', () => {
           }) as Record<string, unknown>,
         }),
       );
+    });
+  });
+
+  // I3b + I2. Food and grocery were the only order types that never wrote a
+  // drop-off, so a live order reached the rider with no destination at all.
+  describe('2.5 — merchant orders carry a drop-off', () => {
+    const merchantAndItem = () => {
+      prisma.merchants.findUnique.mockResolvedValue({
+        id: 'm-1',
+        name: 'Kusina',
+        delivery_fee: 4900n,
+      });
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Adobo',
+        price: 12000n,
+        in_stock: true,
+      });
+      prisma.orders.create.mockResolvedValue({ id: 'order-x' });
+    };
+
+    const createdData = () =>
+      (prisma.orders.create.mock.calls[0][0] as { data: Record<string, any> })
+        .data;
+
+    it('persists dropoff_instruction and dropoff_note (I3b)', async () => {
+      merchantAndItem();
+
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+        dropoff_instruction: 'leave_at_door',
+        dropoff_note: 'Green gate, second floor',
+      });
+
+      expect(createdData()).toMatchObject({
+        dropoff_instruction: 'leave_at_door',
+        dropoff_note: 'Green gate, second floor',
+      });
+    });
+
+    it('leaves the instruction undefined when the body omits it, so the DB default (hand_to_me) stands', async () => {
+      merchantAndItem();
+
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+      });
+
+      expect(createdData().dropoff_instruction).toBeUndefined();
+      expect(createdData().dropoff_note).toBeUndefined();
+    });
+
+    it('falls back to the default saved address when the body carries no coordinates', async () => {
+      merchantAndItem();
+
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+      });
+
+      // Ranked default-first, so a customer with several addresses still gets
+      // the one checkout shows them.
+      expect(prisma.addresses.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { user_id: 'customer-1' },
+          orderBy: [{ is_default: 'desc' }, { created_at: 'asc' }],
+        }),
+      );
+      expect(createdData()).toMatchObject({
+        dropoff_lat: 10.7145,
+        dropoff_lng: 122.5996,
+        dropoff_text: 'Lopez Jaena St, Jaro, Iloilo City',
+      });
+    });
+
+    it('prefers a per-order drop-off over the default address (I2)', async () => {
+      merchantAndItem();
+
+      await service.placeGroceryOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+        dropoff_lat: 10.7128,
+        dropoff_lng: 122.5474,
+        dropoff_text: 'SM City Iloilo, Mandurriao',
+      });
+
+      // The whole point of I2: ordering to somewhere else must not read, or
+      // change, the saved default.
+      expect(prisma.addresses.findFirst).not.toHaveBeenCalled();
+      expect(createdData()).toMatchObject({
+        dropoff_lat: 10.7128,
+        dropoff_lng: 122.5474,
+        dropoff_text: 'SM City Iloilo, Mandurriao',
+      });
+    });
+
+    it('refuses an order it could never deliver — customer has no address at all', async () => {
+      merchantAndItem();
+      prisma.addresses.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.placeFoodOrder('customer-1', {
+          merchant_id: 'm-1',
+          items: [{ menu_item_id: 'mi-1', qty: 1 }],
+        }),
+      ).rejects.toThrow(/delivery address/i);
+
+      expect(prisma.orders.create).not.toHaveBeenCalled();
     });
   });
 
