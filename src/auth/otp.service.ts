@@ -6,12 +6,16 @@ import {
 } from '@nestjs/common';
 import { createHash, randomInt } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveSmsProvider, resolveEmailProvider } from './otp-providers';
 
 type OtpChannel = 'sms' | 'email';
 
 /**
  * OTP service — generates, stores, verifies 6-digit codes.
- * Sends SMS via Semaphore (PH-local gateway) or email via Resend.
+ * Delivery goes through the OtpProvider seam (see otp-providers.ts): SMS and
+ * email providers (Semaphore / Resend) are HELD by default and the stub is
+ * active, so no live send happens and the code is returned in the response
+ * for QA. Swapping in a real provider (or Brevo) is a config/env change only.
  * Rate limit: max 3 codes per 15 min per identifier (C-1.2).
  */
 @Injectable()
@@ -32,16 +36,20 @@ export class OtpService {
   ): Promise<{ message: string; code?: string }> {
     const code = await this.generateAndStore(phone, 'sms', userId);
 
-    const devMode = process.env.OTP_DEV_MODE === 'true';
-    if (!devMode) {
-      await this.sendSemaphoreSms(phone, code);
-    }
+    // Held stub → nothing sent, code returned for QA. Live provider → real
+    // send, code withheld from the response.
+    const provider = resolveSmsProvider();
+    await provider.send(phone, code);
 
-    return { message: 'OTP sent successfully', ...(devMode ? { code } : {}) };
+    return {
+      message: 'OTP sent successfully',
+      ...(provider.isStub ? { code } : {}),
+    };
   }
 
   /**
-   * Generate a 6-digit OTP, hash it, store in otp_codes, send via Resend.
+   * Generate a 6-digit OTP, hash it, store in otp_codes, deliver via the
+   * active email provider (held stub by default — see otp-providers.ts).
    */
   async sendEmailOtp(
     email: string,
@@ -49,12 +57,13 @@ export class OtpService {
   ): Promise<{ message: string; code?: string }> {
     const code = await this.generateAndStore(email, 'email', userId);
 
-    const devMode = process.env.OTP_DEV_MODE === 'true';
-    if (!devMode) {
-      await this.sendResendEmail(email, code);
-    }
+    const provider = resolveEmailProvider();
+    await provider.send(email, code);
 
-    return { message: 'OTP sent successfully', ...(devMode ? { code } : {}) };
+    return {
+      message: 'OTP sent successfully',
+      ...(provider.isStub ? { code } : {}),
+    };
   }
 
   /**
@@ -195,92 +204,5 @@ export class OtpService {
     }
 
     return { verified: true };
-  }
-
-  /**
-   * Send SMS via Semaphore API.
-   */
-  private async sendSemaphoreSms(phone: string, code: string): Promise<void> {
-    const apiKey = process.env.SEMAPHORE_API_KEY;
-    const senderName = process.env.SEMAPHORE_SENDER_NAME || 'CARTMAN';
-
-    if (!apiKey) {
-      console.warn('SEMAPHORE_API_KEY not set — skipping SMS send');
-      return;
-    }
-
-    const message = `Your Cartman verification code is: ${code}. Valid for 10 minutes.`;
-
-    const response = await fetch('https://api.semaphore.co/api/v4/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        apikey: apiKey,
-        number: phone.replace('+', ''),
-        message,
-        sendername: senderName,
-      }),
-    });
-
-    // Semaphore reports some validation failures (e.g. an unregistered
-    // sender name) as HTTP 200 with an error object — observed live
-    // 2026-07-18 — so `response.ok` alone would report success while no SMS
-    // ever left. A real accept is always an ARRAY of message objects
-    // carrying `message_id`.
-    const bodyText = await response.text();
-    let accepted = false;
-    if (response.ok) {
-      try {
-        const parsed: unknown = JSON.parse(bodyText);
-        accepted =
-          Array.isArray(parsed) &&
-          parsed.length > 0 &&
-          parsed.every(
-            (m: unknown) =>
-              typeof m === 'object' && m !== null && 'message_id' in m,
-          );
-      } catch {
-        accepted = false;
-      }
-    }
-
-    if (!accepted) {
-      console.error('Semaphore SMS failed:', bodyText);
-      throw new HttpException(
-        'SMS send failed — try again',
-        HttpStatus.BAD_GATEWAY,
-      );
-    }
-  }
-
-  /**
-   * Send email via Resend API.
-   */
-  private async sendResendEmail(email: string, code: string): Promise<void> {
-    const apiKey = process.env.RESEND_API_KEY;
-    const fromEmail = process.env.RESEND_FROM_EMAIL;
-
-    if (!apiKey) {
-      console.warn('RESEND_API_KEY not set — skipping email send');
-      return;
-    }
-
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: fromEmail,
-        to: email,
-        subject: 'Your Cartman verification code',
-        html: `Your Cartman verification code is: ${code}. Valid for 10 minutes.`,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error('Resend email failed:', await response.text());
-    }
   }
 }

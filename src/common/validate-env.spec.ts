@@ -46,15 +46,16 @@ describe('validateEnv', () => {
   });
 
   describe('production requirements', () => {
+    // No OTP keys here: the default providers are held stubs, so production
+    // boots with none set (see OTP provider requirements below).
     const PROD_ENV = {
       ...BASE_DEV_ENV,
       NODE_ENV: 'production',
       SUPABASE_WEBHOOK_SECRET: 'whsec',
       CORS_ORIGINS: 'https://app.cartman.ph',
-      SEMAPHORE_API_KEY: 'sk_live',
     };
 
-    it('passes when all production-required vars are present', () => {
+    it('passes when all production-required vars are present (OTP providers held)', () => {
       expect(() => validateEnv(PROD_ENV)).not.toThrow();
     });
 
@@ -70,20 +71,44 @@ describe('validateEnv', () => {
       expect(() => validateEnv(env)).toThrow(/CORS_ORIGINS/);
     });
 
-    it('throws naming SEMAPHORE_API_KEY when missing in production and OTP_DEV_MODE is not true', () => {
-      const env = { ...PROD_ENV };
-      delete (env as Record<string, unknown>).SEMAPHORE_API_KEY;
-      expect(() => validateEnv(env)).toThrow(/SEMAPHORE_API_KEY/);
+    it('does not require production-only vars outside production', () => {
+      expect(() => validateEnv(BASE_DEV_ENV)).not.toThrow();
     });
+  });
 
-    it('does not require SEMAPHORE_API_KEY in production when OTP_DEV_MODE is true', () => {
-      const env = { ...PROD_ENV, OTP_DEV_MODE: 'true' };
-      delete (env as Record<string, unknown>).SEMAPHORE_API_KEY;
+  describe('OTP provider requirements', () => {
+    it('does not require SEMAPHORE_API_KEY by default (held stub) even in production', () => {
+      const env = {
+        ...BASE_DEV_ENV,
+        NODE_ENV: 'production',
+        SUPABASE_WEBHOOK_SECRET: 'whsec',
+        CORS_ORIGINS: 'https://app.cartman.ph',
+      };
       expect(() => validateEnv(env)).not.toThrow();
     });
 
-    it('does not require production-only vars outside production', () => {
-      expect(() => validateEnv(BASE_DEV_ENV)).not.toThrow();
+    it('throws naming SEMAPHORE_API_KEY when OTP_SMS_PROVIDER=semaphore and the key is missing', () => {
+      const env = { ...BASE_DEV_ENV, OTP_SMS_PROVIDER: 'semaphore' };
+      expect(() => validateEnv(env)).toThrow(/SEMAPHORE_API_KEY/);
+    });
+
+    it('throws naming RESEND_API_KEY when OTP_EMAIL_PROVIDER=resend and the key is missing', () => {
+      const env = { ...BASE_DEV_ENV, OTP_EMAIL_PROVIDER: 'resend' };
+      expect(() => validateEnv(env)).toThrow(/RESEND_API_KEY/);
+    });
+
+    it('does not require a provider key when OTP_DEV_MODE=true even if that provider is selected', () => {
+      const env = {
+        ...BASE_DEV_ENV,
+        OTP_SMS_PROVIDER: 'semaphore',
+        OTP_DEV_MODE: 'true',
+      };
+      expect(() => validateEnv(env)).not.toThrow();
+    });
+
+    it('rejects an unknown provider name', () => {
+      const env = { ...BASE_DEV_ENV, OTP_SMS_PROVIDER: 'brevo' };
+      expect(() => validateEnv(env)).toThrow(/OTP_SMS_PROVIDER/);
     });
   });
 });

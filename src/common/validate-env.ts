@@ -16,10 +16,17 @@ import Joi from 'joi';
  *  - SUPABASE_WEBHOOK_SECRET — otherwise WebhooksController silently 401s
  *    every Supabase webhook forever (see webhooks.controller.ts).
  *  - CORS_ORIGINS — main.ts refuses to fall back to "allow all" in prod.
- *  - SEMAPHORE_API_KEY — required unless OTP_DEV_MODE=true (dev-mode OTP
- *    skips SMS entirely, so booting prod without a key must be an explicit
- *    opt-in, never an accident — see INT-13 in docs/go-live-gaps.md).
- *  - RESEND_API_KEY — optional for now (email OTP is a future integration).
+ *
+ * OTP delivery keys are required when their provider is actually selected:
+ * SEMAPHORE_API_KEY when OTP_SMS_PROVIDER=semaphore, RESEND_API_KEY when
+ * OTP_EMAIL_PROVIDER=resend — and never when OTP_DEV_MODE=true, which forces
+ * the stub. Selection itself defaults off the credential (see
+ * `defaultSmsProvider`), so an environment holding a Semaphore key keeps
+ * sending real SMS without also having to name the provider.
+ *
+ * This validator checks that a *selected* provider is configured;
+ * `assertSafeOtpConfig` separately refuses to boot a production environment
+ * that resolved to the stub, since the stub returns codes in the API response.
  *
  * Deliberately optional everywhere, including production:
  *  - MAPBOX_TOKEN — the geocoding proxy (GeoModule) fails soft to empty
@@ -32,6 +39,15 @@ export function validateEnv(
 ): void {
   const isProduction = env.NODE_ENV === 'production';
   const otpDevMode = env.OTP_DEV_MODE === 'true';
+  // Mirrors `defaultSmsProvider`: an unset selection means Semaphore when its
+  // key is present. Hardcoding 'stub' here would let a half-configured
+  // environment (key blank, provider named) slip past the required-key check.
+  const smsProvider = (
+    env.OTP_SMS_PROVIDER ?? (env.SEMAPHORE_API_KEY ? 'semaphore' : 'stub')
+  ).toLowerCase();
+  const emailProvider = (env.OTP_EMAIL_PROVIDER ?? 'stub').toLowerCase();
+  const semaphoreRequired = !otpDevMode && smsProvider === 'semaphore';
+  const resendRequired = !otpDevMode && emailProvider === 'resend';
 
   // Optional vars must explicitly .allow('') — dotenv/.env files commonly
   // have a var present but blank (e.g. `SEMAPHORE_API_KEY=` in dev, filled in
@@ -48,11 +64,23 @@ export function validateEnv(
     CORS_ORIGINS: isProduction
       ? Joi.string().required()
       : Joi.string().optional().allow(''),
-    SEMAPHORE_API_KEY:
-      isProduction && !otpDevMode
-        ? Joi.string().required()
-        : Joi.string().optional().allow(''),
-    RESEND_API_KEY: Joi.string().optional().allow(''),
+    // Only the supported provider names — a typo like OTP_SMS_PROVIDER=brevo
+    // before Brevo is implemented fails fast at boot instead of silently
+    // stubbing. Add new names here when their provider lands.
+    OTP_SMS_PROVIDER: Joi.string()
+      .valid('stub', 'semaphore')
+      .optional()
+      .allow(''),
+    OTP_EMAIL_PROVIDER: Joi.string()
+      .valid('stub', 'resend')
+      .optional()
+      .allow(''),
+    SEMAPHORE_API_KEY: semaphoreRequired
+      ? Joi.string().required()
+      : Joi.string().optional().allow(''),
+    RESEND_API_KEY: resendRequired
+      ? Joi.string().required()
+      : Joi.string().optional().allow(''),
     MAPBOX_TOKEN: Joi.string().optional().allow(''),
   }).unknown(true);
 

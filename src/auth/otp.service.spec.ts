@@ -83,10 +83,20 @@ describe('OtpService', () => {
     process.env.RESEND_API_KEY = 'test-resend-key';
     process.env.RESEND_FROM_EMAIL = 'noreply@cartmanph.com';
     process.env.SEMAPHORE_API_KEY = 'test-semaphore-key';
+    // Most tests exercise the live provider path; the held-stub default is
+    // covered explicitly in its own describe block below.
+    process.env.OTP_SMS_PROVIDER = 'semaphore';
+    process.env.OTP_EMAIL_PROVIDER = 'resend';
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
+    delete process.env.OTP_SMS_PROVIDER;
+    delete process.env.OTP_EMAIL_PROVIDER;
+    delete process.env.OTP_DEV_MODE;
+    delete process.env.SEMAPHORE_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    delete process.env.RESEND_FROM_EMAIL;
   });
 
   describe('sendEmailOtp', () => {
@@ -319,6 +329,51 @@ describe('OtpService', () => {
       await expect(
         service.verifyOtp('+639171234567', '654321'),
       ).rejects.toThrow('No valid OTP found. Request a new one.');
+    });
+  });
+
+  describe('provider selection and the code-in-response rule', () => {
+    // The stub does not merely skip the send — OtpService returns the code in
+    // the API response, and POST /auth/send-otp is public. "Which provider is
+    // active" is therefore a security question, which is why the default keys
+    // off the credential instead of being a flat 'stub'.
+
+    it('an unset selection uses Semaphore when its key is present, and withholds the code', async () => {
+      delete process.env.OTP_SMS_PROVIDER;
+
+      const result = await service.sendOtp('+639171234567');
+
+      expect(fetchMock).toHaveBeenCalled();
+      expect(result.code).toBeUndefined();
+    });
+
+    it('an unset selection with no key falls back to the stub', async () => {
+      delete process.env.OTP_SMS_PROVIDER;
+      delete process.env.SEMAPHORE_API_KEY;
+
+      const result = await service.sendOtp('+639171234567');
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.code).toBeDefined();
+    });
+
+    it('the stub can still be selected explicitly, even with a key set', async () => {
+      // How a deliberate hold is expressed — e.g. while migrating to Brevo.
+      process.env.OTP_SMS_PROVIDER = 'stub';
+
+      const result = await service.sendOtp('+639171234567');
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.code).toBeDefined();
+    });
+
+    it('sendEmailOtp defaults to the held stub — the email path is dormant', async () => {
+      delete process.env.OTP_EMAIL_PROVIDER;
+
+      const result = await service.sendEmailOtp('rider@example.com');
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.code).toBeDefined();
     });
   });
 

@@ -5,15 +5,29 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import { validateEnv } from './common/validate-env';
+import {
+  assertSafeOtpConfig,
+  describeOtpProviders,
+} from './auth/otp-providers';
 
 async function bootstrap() {
   // Fail fast on missing/misconfigured env before the Nest app (and its DB
   // connection) even starts booting.
   validateEnv();
+  // Separate from validateEnv because it checks the *outcome*, not the
+  // spelling: a production deploy whose SMS provider resolves to the held
+  // stub would return verification codes in the response of a public
+  // endpoint. Refusing to boot is the only safe answer.
+  assertSafeOtpConfig();
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const logger = new Logger('Bootstrap');
   const isProduction = process.env.NODE_ENV === 'production';
+
+  // Surface the active OTP delivery config at boot — a held stub means no
+  // real SMS/email is sent and codes are returned in the API response, which
+  // must be obvious in prod logs (it is not safe for real users).
+  logger.log(describeOtpProviders());
 
   // Render (and most PaaS hosts) sit the app behind a single reverse proxy
   // hop. Without this, Express ignores X-Forwarded-For and every request
