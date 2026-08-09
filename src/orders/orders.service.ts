@@ -697,6 +697,15 @@ export class OrdersService {
         },
         data: {
           status: newStatus,
+          // Parity with advance_order_status, which stamps this on the same
+          // transition. This server reimplements that RPC rather than calling
+          // it, and it had been writing `status` alone — so every delivery
+          // completed through this route left `delivered_at` null and only
+          // deliveries made through the RPC recorded a completion time.
+          // Server clock, set once, never client-supplied.
+          ...(newStatus === order_status.delivered
+            ? { delivered_at: new Date() }
+            : {}),
         },
       });
 

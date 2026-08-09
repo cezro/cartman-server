@@ -132,6 +132,45 @@ describe('AdminService.getStats', () => {
     expect(result.avg_delivery_secs_today).toBe(900);
   });
 
+  // updated_at is bumped by rider_submit_pod writing the POD photo after the
+  // handover, so on any order with proof of delivery it measures
+  // order-to-paperwork. delivered_at is the actual transition.
+  it('prefers delivered_at over updated_at when it is present', async () => {
+    prisma.orders.findMany.mockResolvedValue([
+      {
+        created_at: new Date('2026-07-05T01:00:00.000Z'),
+        delivered_at: new Date('2026-07-05T01:10:00.000Z'), // 600s — the truth
+        updated_at: new Date('2026-07-05T01:45:00.000Z'), // POD written later
+      },
+    ]);
+
+    const result = await service.getStats();
+
+    expect(result.avg_delivery_secs_today).toBe(600);
+  });
+
+  // Rows delivered before the column existed, and any delivery this server
+  // completed before it started stamping, have no delivered_at. Dropping them
+  // would narrow the average to a subset rather than report it over the day.
+  it('falls back to updated_at for rows with no delivered_at, mixing both', async () => {
+    prisma.orders.findMany.mockResolvedValue([
+      {
+        created_at: new Date('2026-07-05T01:00:00.000Z'),
+        delivered_at: new Date('2026-07-05T01:10:00.000Z'), // 600s
+        updated_at: new Date('2026-07-05T01:45:00.000Z'),
+      },
+      {
+        created_at: new Date('2026-07-05T02:00:00.000Z'),
+        delivered_at: null, // legacy row
+        updated_at: new Date('2026-07-05T02:20:00.000Z'), // 1200s
+      },
+    ]);
+
+    const result = await service.getStats();
+
+    expect(result.avg_delivery_secs_today).toBe(900);
+  });
+
   it('scopes the *_today queries to Manila midnight', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-07-05T04:00:00.000Z')); // 12:00 Manila

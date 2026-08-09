@@ -233,6 +233,21 @@ model orders {
   recipient_name  String?
   recipient_phone String?
 
+  // Completion. `delivered_at` is the server clock stamped on the real
+  // in_transit → delivered transition, set once and never by the client — a
+  // completion time on a cash order is a number someone has a reason to shade.
+  // Both this server's advanceRiderStatus and the advance_order_status RPC
+  // write it; they are parallel implementations of the same transition
+  // (20260803000300 in cartman-mobile), so they have to agree.
+  delivered_at DateTime? @db.Timestamptz()
+
+  // Proof of delivery, written only by the rider_submit_pod RPC, which the
+  // rider app calls directly over Supabase. Present here so Prisma can read
+  // them back — without the fields they are simply invisible to this server
+  // rather than an error, which is the harder kind of drift to notice.
+  pod_photo_url String?
+  pod_note      String?
+
   // Cancellation — set by merchant_reject_order / customer / admin
   canceled_reason String?
   canceled_by     String? // 'merchant' | 'customer' | 'admin' | 'rider'

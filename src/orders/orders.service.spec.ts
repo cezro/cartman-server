@@ -9,6 +9,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { order_status, order_type, Prisma } from '@prisma/client';
 
+// Shape of the update() call advanceRiderStatus issues, so mock.calls[0][0]
+// reads as this rather than `any` (same approach as
+// admin.service.mutations.spec.ts's OrdersUpdateManyCall).
+interface OrdersUpdateCall {
+  where: { id: string; assigned_rider_id?: string };
+  data: { status: order_status; delivered_at?: Date };
+}
+
 describe('OrdersService', () => {
   let service: OrdersService;
   let prisma: {
@@ -16,7 +24,7 @@ describe('OrdersService', () => {
     menu_items: { findUnique: jest.Mock };
     orders: {
       create: jest.Mock;
-      update: jest.Mock;
+      update: jest.Mock<Promise<unknown>, [OrdersUpdateCall]>;
       updateMany: jest.Mock;
       findUnique: jest.Mock;
       findMany: jest.Mock;
@@ -46,7 +54,7 @@ describe('OrdersService', () => {
       menu_items: { findUnique: jest.fn() },
       orders: {
         create: jest.fn(),
-        update: jest.fn(),
+        update: jest.fn<Promise<unknown>, [OrdersUpdateCall]>(),
         updateMany: jest.fn(),
         findUnique: jest.fn(),
         findMany: jest.fn(),
@@ -498,6 +506,41 @@ describe('OrdersService', () => {
       );
 
       expect(result.status).toBe(order_status.arrived_at_merchant);
+      // Only the real completion stamps a completion time.
+      expect(
+        prisma.orders.update.mock.calls[0][0].data.delivered_at,
+      ).toBeUndefined();
+    });
+
+    // Parity with advance_order_status, which stamps delivered_at on this same
+    // transition. This server reimplements that RPC rather than calling it, so
+    // the two have to agree or completion times exist only for whichever path
+    // the delivery happened to take.
+    it('stamps delivered_at on the in_transit -> delivered transition', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        id: 'order-1',
+        status: order_status.in_transit,
+        assigned_rider_id: 'rider-1',
+      });
+      prisma.orders.update.mockResolvedValue({
+        id: 'order-1',
+        status: order_status.delivered,
+        assigned_rider_id: 'rider-1',
+        delivery_payout: 5000n,
+        payment: 'cod',
+        total: 10000n,
+      });
+      prisma.rider_wallet_transactions.findFirst.mockResolvedValue(null);
+
+      await service.advanceRiderStatus(
+        'order-1',
+        'rider-1',
+        order_status.delivered,
+      );
+
+      const written = prisma.orders.update.mock.calls[0][0].data;
+      expect(written.status).toBe(order_status.delivered);
+      expect(written.delivered_at).toBeInstanceOf(Date);
     });
 
     it('throws NotFound/BadRequest when the order does not exist or is not assigned to this rider', async () => {

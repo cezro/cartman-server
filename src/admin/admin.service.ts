@@ -128,7 +128,7 @@ export class AdminService {
           status: order_status.delivered,
           updated_at: { gte: midnight },
         },
-        select: { created_at: true, updated_at: true },
+        select: { created_at: true, updated_at: true, delivered_at: true },
       }),
     ]);
 
@@ -162,17 +162,35 @@ export class AdminService {
       }
     }
 
-    // Approximation pending a delivered_at column — updated_at is bumped by
-    // the orders_set_updated_at DB trigger and delivered rows are not
-    // mutated afterward today, so (updated_at - created_at) on a delivered
-    // row is currently equivalent to its delivery duration.
+    // Prefer `delivered_at` — the server clock stamped on the actual
+    // in_transit → delivered transition — and fall back to `updated_at` only
+    // where it is null.
+    //
+    // The fallback is not permanent politeness: rows delivered before
+    // 20260803000300 added the column never got one, and neither did any
+    // delivery completed through this server before it started stamping it.
+    // Dropping those rows would silently narrow the average to a subset
+    // instead of reporting it over the day.
+    //
+    // `updated_at` alone is no longer a safe stand-in, whatever the previous
+    // comment here claimed: rider_submit_pod writes the proof-of-delivery
+    // photo *after* the handover and bumps `updated_at` with it, so on any
+    // order with a POD the old arithmetic measured order-to-paperwork rather
+    // than order-to-doorstep.
     let avgDeliverySecsToday: number | null = null;
     if (deliveredTodayOrders.length > 0) {
       const totalSecs = (
-        deliveredTodayOrders as { created_at: Date; updated_at: Date }[]
+        deliveredTodayOrders as {
+          created_at: Date;
+          updated_at: Date;
+          delivered_at: Date | null;
+        }[]
       ).reduce(
         (sum, o) =>
-          sum + (o.updated_at.getTime() - o.created_at.getTime()) / 1000,
+          sum +
+          ((o.delivered_at ?? o.updated_at).getTime() -
+            o.created_at.getTime()) /
+            1000,
         0,
       );
       avgDeliverySecsToday = totalSecs / deliveredTodayOrders.length;
