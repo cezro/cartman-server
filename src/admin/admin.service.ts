@@ -17,6 +17,7 @@ import { LedgerService, CREDIT_TYPES } from '../ledger/ledger.service';
 import {
   ACTIVE_RIDER_STATUSES,
   MAX_ACTIVE_ORDERS_PER_RIDER,
+  TERMINAL_ORDER_STATUSES,
   WALLET_LOCK_FLOOR,
 } from '../orders/orders.service';
 import {
@@ -39,11 +40,13 @@ const CUSTOMER_SELECT = { id: true, full_name: true, phone: true } as const;
 const RIDER_SELECT = { id: true, full_name: true, phone: true } as const;
 
 // Same "active" definition as GET /admin/stats's orders.active (everything
-// except the two terminal statuses) — reused for the per-merchant and
-// per-rider active_orders counts on the fleet/merchant list endpoints.
+// except the terminal statuses) — reused for the per-merchant and per-rider
+// active_orders counts on the fleet/merchant list endpoints. Derived from the
+// one TERMINAL_ORDER_STATUSES list so a new terminal status cannot quietly
+// start counting as active here.
 const NON_TERMINAL_ORDER_STATUSES: order_status[] = Object.values(
   order_status,
-).filter((s) => s !== order_status.delivered && s !== order_status.canceled);
+).filter((s) => !TERMINAL_ORDER_STATUSES.includes(s));
 
 // Ledger sign rule imported from LedgerService — one definition; see the
 // export comment there for the SQL-function sync requirement.
@@ -63,6 +66,7 @@ export class AdminService {
       unassigned,
       deliveredToday,
       canceledToday,
+      deliveryFailedToday,
       onDuty,
       total,
       codTodayRows,
@@ -70,9 +74,7 @@ export class AdminService {
       deliveredTodayOrders,
     ] = await Promise.all([
       this.prisma.orders.count({
-        where: {
-          status: { notIn: [order_status.delivered, order_status.canceled] },
-        },
+        where: { status: { notIn: TERMINAL_ORDER_STATUSES } },
       }),
       this.prisma.orders.count({
         where: {
@@ -90,6 +92,16 @@ export class AdminService {
         where: {
           status: order_status.canceled,
           updated_at: { gte: midnight },
+        },
+      }),
+      // Counted separately from canceled_today, and on delivery_failed_at
+      // rather than updated_at: the failure time is the server clock stamped
+      // by the RPC, so it survives any later touch of the row (an ops note, a
+      // refund flag) that would drag updated_at into tomorrow.
+      this.prisma.orders.count({
+        where: {
+          status: order_status.delivery_failed,
+          delivery_failed_at: { gte: midnight },
         },
       }),
       this.prisma.riders.count({ where: { is_active: true } }),
@@ -172,6 +184,7 @@ export class AdminService {
         unassigned,
         delivered_today: deliveredToday,
         canceled_today: canceledToday,
+        delivery_failed_today: deliveryFailedToday,
       },
       fleet: { on_duty: onDuty, total },
       cod_today: {
@@ -297,10 +310,16 @@ export class AdminService {
     // Race-safe: the WHERE clause re-checks the terminal-status guard
     // atomically in the same statement as the write, so a concurrent
     // cancel/delivery can't both "succeed".
+    //
+    // `delivery_failed` is in that guard, so a failed delivery cannot be
+    // overwritten with `canceled`. That would leave an incoherent row — status
+    // `canceled` still carrying `delivery_failure_reason` and
+    // `delivery_failed_at` — and would erase the distinction the failure state
+    // exists to record: whether the goods moved, and who is holding them.
     const result = await this.prisma.orders.updateMany({
       where: {
         id,
-        status: { notIn: [order_status.delivered, order_status.canceled] },
+        status: { notIn: TERMINAL_ORDER_STATUSES },
       },
       data: { status: order_status.canceled },
     });

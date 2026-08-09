@@ -68,7 +68,11 @@ describe('AdminService.cancelOrder', () => {
       expect(result.status).toBe('canceled');
       const call = prisma.orders.updateMany.mock.calls[0][0];
       expect(call.where.id).toBe('o1');
-      expect(call.where.status.notIn).toEqual(['delivered', 'canceled']);
+      expect(call.where.status.notIn).toEqual([
+        'delivered',
+        'canceled',
+        'delivery_failed',
+      ]);
       expect(call.data.status).toBe('canceled');
     },
   );
@@ -90,6 +94,21 @@ describe('AdminService.cancelOrder', () => {
     prisma.orders.findUnique.mockResolvedValue({
       id: 'o1',
       status: 'canceled',
+    });
+
+    await expect(service.cancelOrder('o1')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  // Overwriting a failed delivery with `canceled` would leave the row
+  // incoherent — status `canceled` still carrying delivery_failure_reason and
+  // delivery_failed_at — and erase whether the goods actually moved.
+  it('returns 400 when the delivery already failed', async () => {
+    prisma.orders.updateMany.mockResolvedValue({ count: 0 });
+    prisma.orders.findUnique.mockResolvedValue({
+      id: 'o1',
+      status: 'delivery_failed',
     });
 
     await expect(service.cancelOrder('o1')).rejects.toBeInstanceOf(

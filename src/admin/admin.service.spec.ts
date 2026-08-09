@@ -178,7 +178,8 @@ describe('AdminService.getStats', () => {
       .mockResolvedValueOnce(7) // active
       .mockResolvedValueOnce(3) // unassigned
       .mockResolvedValueOnce(4) // delivered_today
-      .mockResolvedValueOnce(1); // canceled_today
+      .mockResolvedValueOnce(1) // canceled_today
+      .mockResolvedValueOnce(2); // delivery_failed_today
     prisma.riders.count
       .mockResolvedValueOnce(5) // on_duty
       .mockResolvedValueOnce(12); // total
@@ -190,7 +191,30 @@ describe('AdminService.getStats', () => {
       unassigned: 3,
       delivered_today: 4,
       canceled_today: 1,
+      delivery_failed_today: 2,
     });
     expect(result.fleet).toEqual({ on_duty: 5, total: 12 });
+  });
+
+  // A failed delivery is closed, not in flight. Before delivery_failed became
+  // terminal these two counts read it as active, which would have overstated
+  // the live queue on the dashboard and in every per-rider/per-merchant
+  // active_orders figure.
+  it('excludes delivery_failed from the active count and counts it on its own clock', async () => {
+    await service.getStats();
+
+    const activeCall = prisma.orders.count.mock.calls[0][0];
+    expect(activeCall.where.status.notIn).toEqual([
+      'delivered',
+      'canceled',
+      'delivery_failed',
+    ]);
+
+    const failedCall = prisma.orders.count.mock.calls[4][0];
+    expect(failedCall.where.status).toBe('delivery_failed');
+    // delivery_failed_at, not updated_at — a later touch of the row must not
+    // drag the failure into tomorrow's count.
+    expect(failedCall.where.delivery_failed_at).toBeDefined();
+    expect(failedCall.where.updated_at).toBeUndefined();
   });
 });

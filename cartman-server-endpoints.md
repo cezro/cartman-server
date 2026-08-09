@@ -72,6 +72,12 @@ next to `backend-schema.md` (the DB contract) on purpose.
   on the PK), and a `phone` already claimed by another profile → **409**
   (`profiles.phone` is UNIQUE).
 
+  Client side: `AuthRepository.onboardRider()`
+  (`packages/core/lib/src/data/supabase_auth_repository.dart` →
+  `RiderOnboardingApi`) is called by the rider app's
+  `RiderOnboardingScreen`, which the router guard
+  (`apps/rider/lib/src/router.dart`) pins a riderless session to.
+
 ---
 
 ## Endpoint inventory — what the clients already call
@@ -99,7 +105,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `GET /orders/feed` | rider | → `[{order: <order JSON>, score, distance_km, expires_at}]`; 403 when off-duty / locked-out (client shows `message`). `expires_at` = `created_at + FEED_ACCEPT_WINDOW_MINUTES` (default 5) — R-4.1 display urgency only, expired entries stay claimable. Entries embed `order_items` + `order_stops` |
 | `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC). Response embeds `order_items` + `order_stops` (boots the active screen) |
 | `PATCH /orders/:id/status` | rider | `{status}` → order JSON (`advance_order_status` RPC) |
-| `POST /riders/onboard` | rider | `{vehicle?, plate_no?, phone?}` → `riders` row. Promotes the **caller** (id from the JWT, never the body) to `role='rider'` and creates their `riders` row. **The only riders route with no `@Roles`** — see below |
+| `POST /riders/onboard` | rider | `{vehicle?, plate_no?, phone?}` → `riders` row. Promotes the **caller** (id from the JWT, never the body) to `role='rider'` and creates their `riders` row. **The only riders route with no `@Roles`** — see the auth model above |
 | `GET /riders/me/history` | rider | → `[order JSON]`, delivered, caller-scoped |
 | `PATCH /riders/me/duty` | rider | `{is_active: bool}` → `{}` (`set_duty` RPC) |
 | `GET /ledger/me/wallet` | rider | → `{balance: string}` (centavos; `rider_net_cash`) |
@@ -124,6 +130,26 @@ delivery_fee, discount, total, delivery_payout, created_at, items[], stops[]`.
 `{pickup_lat, pickup_lng, pickup_text, dropoff_lat, dropoff_lng, dropoff_text,
 notes}`.
 
+**`delivery_failed` is deliberately not a route here.** The rider app reports a
+failed delivery by calling the `rider_report_delivery_failed` SECURITY DEFINER
+RPC **directly over Supabase** (`20260809000100_delivery_failed.sql`), the same
+posture as `rider_submit_pod`. Do not add it as a `PATCH /orders/:id/status`
+target — `UpdateOrderStatusDto` excludes it on purpose, because that route only
+accepts the forward transitions in `NEXT`, and a failure is not one of them.
+
+cartman-server's only obligation is to **read** the state without lying about
+it, which means two things:
+- `schema.prisma` mirrors the `delivery_failed` enum value, the
+  `delivery_failure_reason` enum, and `orders.delivery_failure_reason` /
+  `orders.delivery_failed_at`. Prisma emits explicit column lists and casts
+  enum labels, so a schema that does not know these throws on every order read
+  — and one that knows them before the migration is applied throws just as
+  hard. **The migration has to land first.**
+- `TERMINAL_ORDER_STATUSES` (`src/orders/orders.service.ts`) is the single list
+  of statuses an order cannot leave, and `delivery_failed` is in it. Prefer it
+  over spelling out `notIn: [delivered, canceled]`, which is a deny-list every
+  new terminal status silently escapes.
+
 **Geocoding proxy** (`GET /geo/*`, `src/geo/`): the app never calls a geocoding
 provider directly. The token stays server-side, results are cached in-process
 (24h TTL, LRU) to stay inside the free tier, and the response shape above is
@@ -135,6 +161,10 @@ app-store release. Every upstream call is pinned to `country=ph`.
 degrades to manual pin-drop; a customer who cannot save an address cannot order
 at all, so a broken geocoder must never take checkout down with it. The server
 boots fine with no token configured.
+
+Client side: `GeoRepository` (`packages/core/lib/src/data/geo_repository.dart`)
+swallows every error to `[]`/`null` for the same reason, and short-circuits
+queries under 3 characters without a request.
 
 Tiles deliberately do **not** go through here — dozens of requests per map pan,
 latency-sensitive, and the app's basemap (CARTO) needs no key at all.
@@ -386,6 +416,7 @@ twin-first way as `cancel_order`:
   Merchant-less orders (Pabili/ride/courier/multi-stop) pass `merchant_stars`
   null and rate only the rider.
 - **Response:** the created rating summary. **201.**
-- **Client (MOBILE, still to wire):** navigate to `/rate` from a delivered order
-  (track screen + order history) and persist on submit via a `RatingRepository`
-  → this route. See `docs/production-readiness.md` §3.
+- **Client (MOBILE):** ~~still to wire~~ — **done (2026-07-19):** `/rate`
+  receives the delivered order from the track screen + order history and
+  persists via `RatingRepository` → this route. See
+  `docs/production-readiness.md` §3.

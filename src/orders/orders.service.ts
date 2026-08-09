@@ -40,6 +40,21 @@ const NEXT: Partial<Record<order_status, order_status>> = {
   in_transit: order_status.delivered,
 };
 
+// Statuses an order can never leave. `delivery_failed` belongs here with the
+// other two: the rider attempted the delivery and it failed, and the row is
+// closed pending an operations decision, not waiting on anyone in the app.
+//
+// Keep this a single exported list rather than repeating
+// `notIn: [delivered, canceled]` at each call site. That idiom is a deny-list,
+// so every new terminal status silently reads as "still active" everywhere it
+// was spelled out — which is exactly how `delivery_failed` would otherwise have
+// landed in the admin active counts and stayed admin-cancelable.
+export const TERMINAL_ORDER_STATUSES: order_status[] = [
+  order_status.delivered,
+  order_status.canceled,
+  order_status.delivery_failed,
+];
+
 // round(avg(stars), 2) twin for the rate_order RPC's aggregate recompute.
 // Computed from the exact integer sum/count (stars are small ints) so the
 // half-up rounding at x.xx5 boundaries matches Postgres round(numeric, 2);

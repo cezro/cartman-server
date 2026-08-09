@@ -33,6 +33,23 @@ enum order_status {
   in_transit
   delivered
   canceled
+  // Attempted and failed, as opposed to `canceled` — a decision someone made,
+  // usually before the goods moved. The two differ for money and for blame: on
+  // COD the rider holds goods nobody paid for and collected nothing; on prepaid
+  // the customer's money is already taken. Listed last to mirror the DB, where
+  // `alter type ... add value` appends (20260809000100 in cartman-mobile).
+  delivery_failed
+}
+
+// Why the delivery failed. A closed enum rather than free text because the
+// reason decides who bears the cost, and that is not a question to answer by
+// parsing a sentence a rider typed at a gate in the rain. `orders.canceled_reason`
+// carries the rider's optional note alongside it.
+enum delivery_failure_reason {
+  customer_unreachable // nobody answering: door, phone, or chat
+  wrong_address // address does not exist / pin is not the place
+  customer_refused // reached, and declined to take it
+  unsafe_location // rider judged the drop-off unsafe to approach
 }
 
 enum order_type {
@@ -218,7 +235,15 @@ model orders {
 
   // Cancellation — set by merchant_reject_order / customer / admin
   canceled_reason String?
-  canceled_by     String? // 'merchant' | 'customer' | 'admin'
+  canceled_by     String? // 'merchant' | 'customer' | 'admin' | 'rider'
+
+  // Delivery failure. Written only by the rider_report_delivery_failed RPC,
+  // which the rider app calls directly over Supabase — cartman-server does not
+  // own this transition, it only has to read it without throwing.
+  // `delivery_failed_at` is the server clock: a failure time on a cash order is
+  // a number someone has a reason to shade.
+  delivery_failure_reason delivery_failure_reason?
+  delivery_failed_at      DateTime?                @db.Timestamptz()
 
   created_at DateTime @default(now()) @db.Timestamptz()
   updated_at DateTime @default(now()) @db.Timestamptz()
