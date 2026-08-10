@@ -113,8 +113,6 @@ export class GeoService {
     }
   }
 
-
-
   /**
    * Cache hit rates, for answering "is the cache earning its keep" without
    * adding a metrics dependency. Surfaced on the admin health route.

@@ -58,8 +58,9 @@ export class MerchantsService {
   }
 
   async deleteMenuItem(merchantId: string, itemId: string) {
-    return this.prisma.menu_items.delete({
+    const item = await this.prisma.menu_items.delete({
       where: { id: itemId, merchant_id: merchantId },
     });
+    return serializeMenuItem(item);
   }
 }

@@ -1,14 +1,10 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { GeoService } from '../geo/geo.service';
 import { serializeOrder } from '../orders/serialize-order';
 
 @Injectable()
 export class RidersService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly geoService: GeoService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async createRider(userId: string, data: any) {
     return this.prisma.riders.create({

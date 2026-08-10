@@ -6,11 +6,6 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import helmet from 'helmet';
 import { validateEnv } from './common/validate-env';
 
-// Global BigInt JSON serialization fallback for Express / JSON.stringify
-(BigInt.prototype as any).toJSON = function () {
-  return Number(this);
-};
-
 async function bootstrap() {
   // Fail fast on missing/misconfigured env before the Nest app (and its DB
   // connection) even starts booting.
