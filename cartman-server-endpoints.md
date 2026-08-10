@@ -89,7 +89,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | Method & path | Caller | Body → Response |
 |---|---|---|
 | `POST /auth/send-otp` | customer | `{phone}` → `{}` (429 rate-limit, 502 SMS fail) |
-| `POST /auth/verify-otp` | customer | `{phone, code}` → `{verified: bool}`; on true, sets `profiles.phone_verified` |
+| `POST /auth/verify-otp` | customer | `{phone, code}` → `{verified: bool}`; on true, sets `profiles.phone_verified`. **409** when the number is already verified on another account (`profiles.phone` is UNIQUE) — the code was right, so clients must not treat it as a bad code. The consume and the profile write are one transaction: a failure leaves the code unspent and still valid (BUG-013) |
 | `GET /auth/me` | both apps | → `profiles` row + nested `rider` relation |
 | `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}], notes?, dropoff_instruction?, dropoff_note?, dropoff_lat?, dropoff_lng?, dropoff_text?}` → order JSON. Drop-off resolves per-order when coords are sent (I2), else from the customer's **default saved address**; 400 when they have none, since the order would be undeliverable. `dropoff_instruction` omitted ⇒ DB default `hand_to_me` (I3b) |
 | `POST /orders/grocery` | customer | same body and drop-off rules as `/orders/food` → order JSON |
