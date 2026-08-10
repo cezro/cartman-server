@@ -1,7 +1,12 @@
 import { createHash } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { OtpService } from './otp.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { BadRequestException, HttpException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+} from '@nestjs/common';
 
 function hashOtp(identifier: string, code: string): string {
   return createHash('sha256').update(`${identifier}:${code}`).digest('hex');
@@ -21,6 +26,8 @@ type FindFirstFn = jest.Mock<
   [Record<string, unknown>]
 >;
 type UpdateFn = jest.Mock<Promise<unknown>, [Record<string, unknown>]>;
+type TransactionFn = jest.Mock<Promise<unknown>, [TransactionCallback]>;
+type TransactionCallback = (tx: unknown) => Promise<unknown>;
 type FetchFn = jest.Mock<
   Promise<{ ok: boolean; text: () => Promise<string> }>,
   [string, RequestInit]
@@ -38,6 +45,7 @@ describe('OtpService', () => {
     profiles: {
       update: UpdateFn;
     };
+    $transaction: TransactionFn;
   };
   let fetchMock: FetchFn;
 
@@ -63,6 +71,14 @@ describe('OtpService', () => {
           .fn<Promise<unknown>, [Record<string, unknown>]>()
           .mockResolvedValue({}),
       },
+      // Interactive-transaction stub: runs the callback against the same
+      // mocked client, so every existing assertion on prisma.otp_codes /
+      // prisma.profiles still sees the writes. Rollback itself is Postgres's
+      // job — what these tests pin is that the writes are handed to
+      // $transaction at all, and that a failure inside it surfaces correctly.
+      $transaction: jest.fn<Promise<unknown>, [TransactionCallback]>(
+        async (cb: TransactionCallback) => cb(prisma),
+      ),
     };
     service = new OtpService(prisma as unknown as PrismaService);
 
@@ -286,6 +302,101 @@ describe('OtpService', () => {
       await expect(
         service.verifyOtp('+639171234567', code, 'user-2'),
       ).rejects.toThrow('OTP does not belong to this user');
+    });
+  });
+
+  describe('BUG-013 — a failed profile write must not spend the code', () => {
+    // The reported sequence was: correct code → 500 → the same code then reads
+    // as invalid inside its own 10-minute window → repeated retries → 429.
+    //
+    // Root cause: verify() marked the row consumed and *then* wrote
+    // profiles.phone. `profiles.phone` is UNIQUE (20260630000100_schema.sql:60)
+    // and a tester has one phone number but several accounts, so the second
+    // account's write raised P2002. AllExceptionsFilter turned that into a bare
+    // 500, and because the consume had already committed, the retry's
+    // findFirst({consumed: false}) matched nothing — hence "invalid" for a code
+    // that was never wrong.
+    const code = '246810';
+    const phone = '+639171234567';
+
+    function uniqueViolation(): Prisma.PrismaClientKnownRequestError {
+      return new Prisma.PrismaClientKnownRequestError(
+        'Unique constraint failed on the fields: (`phone`)',
+        {
+          code: 'P2002',
+          clientVersion: '6.0.0',
+          meta: { target: ['phone'] },
+        },
+      );
+    }
+
+    beforeEach(() => {
+      prisma.otp_codes.findFirst.mockResolvedValue({
+        id: 'otp-bug013',
+        code_hash: hashOtp(phone, code),
+        attempts: 0,
+        user_id: 'user-1',
+      });
+    });
+
+    it('answers 409 with an actionable message when the number belongs to another account', async () => {
+      prisma.profiles.update.mockRejectedValue(uniqueViolation());
+
+      await expect(
+        service.verifyOtp(phone, code, 'user-1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      await expect(service.verifyOtp(phone, code, 'user-1')).rejects.toThrow(
+        /already verified on another Cartman account/i,
+      );
+    });
+
+    it('hands the consume and the profile write to a single transaction', async () => {
+      await service.verifyOtp(phone, code, 'user-1');
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('never marks the code consumed outside the transaction', async () => {
+      // $transaction rejects without running the callback, standing in for a
+      // rolled-back transaction. Nothing may have escaped it.
+      prisma.$transaction.mockRejectedValue(uniqueViolation());
+
+      await expect(service.verifyOtp(phone, code, 'user-1')).rejects.toThrow();
+
+      const consumeWrites = prisma.otp_codes.update.mock.calls.filter(
+        (call) =>
+          (call[0] as { data?: { consumed?: boolean } }).data?.consumed ===
+          true,
+      );
+      expect(consumeWrites).toHaveLength(0);
+    });
+
+    it('still burns an attempt on a wrong code, since that write is deliberately outside the transaction', async () => {
+      // Brute-force protection must survive a rejected verify — if the
+      // increment were inside the transaction, every wrong guess would roll
+      // its own counter back and MAX_ATTEMPTS would never be reached.
+      await expect(
+        service.verifyOtp(phone, '000000', 'user-1'),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prisma.otp_codes.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'otp-bug013' },
+          data: { attempts: { increment: 1 } },
+        }),
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('lets an unrecognised failure through as a 500 rather than claiming the code was wrong', async () => {
+      prisma.profiles.update.mockRejectedValue(new Error('connection reset'));
+
+      await expect(service.verifyOtp(phone, code, 'user-1')).rejects.toThrow(
+        'connection reset',
+      );
+      await expect(
+        service.verifyOtp(phone, code, 'user-1'),
+      ).rejects.not.toBeInstanceOf(BadRequestException);
     });
   });
 

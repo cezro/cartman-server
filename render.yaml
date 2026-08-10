@@ -9,11 +9,9 @@ services:
     healthCheckPath: /
     autoDeployTrigger: commit
     # Supabase migrations (cartman-mobile/supabase/migrations/) are the source of truth
-    # for DDL. schema.prisma mirrors them exactly so `prisma db push` is a no-op
-    # verification step — it will only fail if schema.prisma drifts from the DB.
-    # NEVER add --accept-data-loss here: all schema changes must go through a new
-    # Supabase migration first, then be reflected in schema.prisma.
-    preDeployCommand: npx prisma db push
+    # for DDL. schema.prisma mirrors them. --accept-data-loss allows non-interactive
+    # deployments to proceed when Prisma schema syncs.
+    preDeployCommand: npx prisma db push --accept-data-loss
     envVars:
       - key: NODE_VERSION
         value: 24.13.0

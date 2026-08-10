@@ -1,10 +1,12 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
 import { createHash, randomInt } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolveSmsProvider, resolveEmailProvider } from './otp-providers';
 
@@ -176,6 +178,9 @@ export class OtpService {
       );
     }
 
+    // Deliberately outside the transaction below: a wrong guess must burn an
+    // attempt even though the verify goes on to throw. Roll this back with
+    // the rest and MAX_ATTEMPTS could never be reached.
     await this.prisma.otp_codes.update({
       where: { id: otpRecord.id },
       data: { attempts: { increment: 1 } },
@@ -185,22 +190,51 @@ export class OtpService {
       throw new BadRequestException('Invalid OTP code.');
     }
 
-    await this.prisma.otp_codes.update({
-      where: { id: otpRecord.id },
-      data: { consumed: true },
-    });
-
     // Only the SMS channel maps onto a profile update: `profiles` has a
     // `phone`/`phone_verified` column pair but no `email` column, so doing
     // this unconditionally for the email channel would both (a) incorrectly
     // flip phone_verified based on an email code and (b) throw a Prisma
     // error writing a nonexistent `profiles.email` column.
     const targetUserId = callerUserId ?? otpRecord.user_id;
-    if (targetUserId && channel === 'sms') {
-      await this.prisma.profiles.update({
-        where: { id: targetUserId },
-        data: { phone_verified: true, phone: identifier },
+    const linksProfile = Boolean(targetUserId) && channel === 'sms';
+
+    // BUG-013. Consuming the code and stamping the profile are one unit of
+    // work. They used to be two statements in sequence, and the second one can
+    // fail: `profiles.phone` is UNIQUE, so verifying a number that another
+    // account already holds raises P2002. The consume had committed by then,
+    // so the customer got a 500 *and* lost a code that was never wrong — the
+    // next attempt found no unconsumed row and was told "No valid OTP found",
+    // inside the code's own 10-minute window. Either both writes land or
+    // neither does, and a spent code now always means a genuinely used one.
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.otp_codes.update({
+          where: { id: otpRecord.id },
+          data: { consumed: true },
+        });
+
+        if (linksProfile) {
+          await tx.profiles.update({
+            where: { id: targetUserId as string },
+            data: { phone_verified: true, phone: identifier },
+          });
+        }
       });
+    } catch (error) {
+      // One phone number, one account — that is what the UNIQUE constraint
+      // says, so say it out loud instead of letting it read as a server fault.
+      // The clients render a JSON `message` in preference to their own
+      // fallback, so this reaches the customer as written.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new ConflictException(
+          'That number is already verified on another Cartman account. ' +
+            'Use a different number, or sign in to the account that has it.',
+        );
+      }
+      throw error;
     }
 
     return { verified: true };

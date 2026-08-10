@@ -124,8 +124,10 @@ model profiles {
   device_tokens            device_tokens[]
   otp_codes                otp_codes[]
   merchant_users           merchant_users[]
-  ratings_given            order_ratings[]    @relation("customer_ratings")
-  ratings_received         order_ratings[]    @relation("rider_ratings")
+  ratings_given            order_ratings[]           @relation("customer_ratings")
+  ratings_received         order_ratings[]           @relation("rider_ratings")
+  rider_assignment_events  order_assignment_events[] @relation("rider_assignment_events")
+  actor_assignment_events  order_assignment_events[] @relation("actor_assignment_events")
 }
 
 // ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
@@ -157,6 +159,7 @@ model merchants {
   min_order       BigInt   @default(0)
   eta_minutes     Int      @default(0)
   is_open         Boolean  @default(true)
+  is_verified     Boolean  @default(false)
   image_url       String?
   promo_text      String?
   // Store pin (WGS84) — customer-app "near you" sort; null = unknown.
@@ -272,6 +275,7 @@ model orders {
   rider_locations        rider_locations[]
   wallet_transactions    rider_wallet_transactions[]
   order_rating           order_ratings?
+  assignment_events      order_assignment_events[]
 
   @@index([customer_id])
   @@index([assigned_rider_id])
@@ -513,4 +517,23 @@ model global_config {
   pro_exposure_multiplier Decimal  @default(2.0)
   allow_ads               Boolean  @default(true)
   updated_at              DateTime @default(now()) @updatedAt @db.Timestamptz()
+}
+
+// ── order_assignment_events — audit log for rider claim/release actions ──
+
+model order_assignment_events {
+  id         BigInt   @id @default(autoincrement())
+  order_id   String   @db.Uuid
+  rider_id   String?  @db.Uuid
+  action     String
+  reason     String?
+  actor_id   String?  @db.Uuid
+  created_at DateTime @default(now()) @db.Timestamptz()
+
+  order  orders    @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  rider  profiles? @relation("rider_assignment_events", fields: [rider_id], references: [id])
+  actor  profiles? @relation("actor_assignment_events", fields: [actor_id], references: [id])
+
+  @@index([order_id, created_at])
+  @@index([rider_id, created_at(sort: Desc)])
 }
