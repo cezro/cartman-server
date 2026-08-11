@@ -496,11 +496,14 @@ export class AdminService {
 
     const items = riders.map((r) => {
       const netCash = netCashByRider.get(r.id) ?? 0n;
+      const name = r.profile?.full_name?.trim();
       return serializeAdminRider({
         id: r.id,
-        full_name: r.profile?.full_name ?? '',
+        full_name: (name && name.length > 0) ? name : `Rider (${r.id.slice(0, 6)})`,
         phone: r.profile?.phone ?? null,
         is_active: r.is_active,
+        is_on_duty: r.is_active,
+        is_verified: r.is_verified,
         vehicle: r.vehicle,
         plate_no: r.plate_no,
         rating: r.rating,
