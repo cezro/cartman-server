@@ -16,6 +16,8 @@ import { AdminVerificationsService } from './admin-verifications.service';
 import { AdminTicketsService } from './admin-tickets.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import {
   AdminOrdersQueryDto,
@@ -151,8 +153,14 @@ export class AdminController {
   }
 
   @Post('verifications/:id/approve')
-  approveVerification(@Param('id') id: string) {
-    return this.verificationsService.approve(id);
+  approveVerification(
+    @Param('id') id: string,
+    // Who opened the gate. Passed explicitly because the SQL RPC that would
+    // normally record it (`admin_set_rider_verified`) reads `auth.uid()`,
+    // which is null on this server's Prisma connection.
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.verificationsService.approve(id, user.id);
   }
 
   @Post('verifications/:id/reject')

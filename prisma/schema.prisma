@@ -145,6 +145,7 @@ model profiles {
   actor_assignment_events  order_assignment_events[] @relation("actor_assignment_events")
   incident_reports_filed   incident_reports[]        @relation("reporter_incidents")
   verification_events_acted verification_events[]     @relation("actor_verifications")
+  push_outbox              push_outbox[]
 }
 
 // ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
@@ -437,6 +438,42 @@ model device_tokens {
 
   @@unique([user_id, token])
   @@index([user_id])
+}
+
+// ── push_outbox — the L3 notification queue ─────────────────────────────
+//
+// Mirrors cartman-mobile/supabase/migrations/20260810000200_push_outbox.sql
+// exactly. Six triggers there decide who to notify and insert a row;
+// PushDrainService reads it and posts each to the `push-send` Edge Function.
+//
+// The table is service-role only: RLS is enabled with **no policies** and all
+// privileges are revoked from anon and authenticated. So this model is only
+// ever reachable through this server's own Prisma connection — a
+// request-scoped or anon client reads zero rows and reports success, which is
+// exactly the "failed upward" shape the POD grant had.
+
+model push_outbox {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  // Which trigger produced this, so a misfiring rule can be found by querying
+  // rather than by reading six functions.
+  event      String
+  title      String
+  body       String?
+  data       Json      @default("{}")
+  created_at DateTime  @default(now()) @db.Timestamptz()
+  sent_at    DateTime? @db.Timestamptz()
+  attempts   Int       @default(0)
+  last_error String?
+
+  // Relations
+  profile profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  // Partial in the database (`where sent_at is null`) — Prisma cannot express
+  // that, and declaring it unqualified here would drift the schema. The index
+  // that actually exists is the migration's; this line only keeps `db push`
+  // from proposing to drop it.
+  @@index([created_at])
 }
 
 // ── otp_codes — transactional SMS + email OTP (C-1.2) ───────────────────
