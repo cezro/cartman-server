@@ -386,6 +386,104 @@ describe('OrdersService', () => {
     });
   });
 
+  // ── M-5.2 — a paused store must refuse new orders on this path too ───────
+  //
+  // `place_order` (the DB twin) grew this guard in
+  // 20260818000100_merchant_busy_until.sql. This service does not call that
+  // RPC — it is a parallel implementation writing `orders` through Prisma — so
+  // until now a client one version behind could order straight into a paused
+  // kitchen. The migration header says so in as many words.
+  describe('M-5.2 — busy guard on merchant orders', () => {
+    const busyStore = (busy_until: Date | null) => {
+      prisma.merchants.findUnique.mockResolvedValue({
+        id: 'm-1',
+        name: 'Kusina',
+        delivery_fee: 4900n,
+        busy_until,
+      });
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Adobo',
+        price: 12000n,
+        in_stock: true,
+      });
+      prisma.orders.create.mockResolvedValue({ id: 'order-x' });
+    };
+
+    const anOrder = () => ({
+      merchant_id: 'm-1',
+      items: [{ menu_item_id: 'mi-1', qty: 1 }],
+    });
+
+    it('refuses a food order while the store is paused', async () => {
+      busyStore(new Date(Date.now() + 15 * 60_000));
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.orders.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a grocery order while the store is paused', async () => {
+      busyStore(new Date(Date.now() + 15 * 60_000));
+
+      await expect(
+        service.placeGroceryOrder('customer-1', anOrder()),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.orders.create).not.toHaveBeenCalled();
+    });
+
+    // 409, not 400. The body is well formed and the customer did nothing
+    // wrong; it is the store's state that refuses, and it will stop refusing
+    // on its own. The clients already treat 409 as "try again", 400 as "you
+    // sent something invalid".
+    it('answers 409, and says what the customer should do about it', async () => {
+      busyStore(new Date(Date.now() + 15 * 60_000));
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toMatchObject({
+        status: 409,
+        // Same sentence the RPC raises, so a customer sees one wording
+        // whichever write path their app version happens to use.
+        message: 'This store has paused new orders. Please try again shortly.',
+      });
+    });
+
+    // The pause expires by itself — that is the whole reason it is a timestamp
+    // and not an `is_busy` flag. Reading it as "busy at any non-null value"
+    // would shut the store permanently at the first pause.
+    it('accepts an order once the pause has expired', async () => {
+      busyStore(new Date(Date.now() - 60_000));
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).resolves.toBeDefined();
+      expect(prisma.orders.create).toHaveBeenCalled();
+    });
+
+    it('accepts an order from a store that has never paused (null)', async () => {
+      busyStore(null);
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).resolves.toBeDefined();
+      expect(prisma.orders.create).toHaveBeenCalled();
+    });
+
+    // Cheapest rejection wins: a paused store should not send the server
+    // through a menu-item lookup per line before it says no.
+    it('rejects before pricing the basket', async () => {
+      busyStore(new Date(Date.now() + 15 * 60_000));
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.menu_items.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
   describe('a fresh errand order is claimable', () => {
     it('claimOrder succeeds when the order is ready_for_pickup and unassigned', async () => {
       prisma.riders.findUnique.mockResolvedValue({
