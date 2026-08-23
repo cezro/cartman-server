@@ -8,10 +8,25 @@ services:
     startCommand: npm run start:prod
     healthCheckPath: /
     autoDeployTrigger: commit
-    # Supabase migrations (cartman-mobile/supabase/migrations/) are the source of truth
-    # for DDL. schema.prisma mirrors them. --accept-data-loss allows non-interactive
-    # deployments to proceed when Prisma schema syncs.
-    preDeployCommand: npx prisma db push --accept-data-loss
+    # ─────────────────────────────────────────────────────────────────────
+    # There is deliberately NO preDeployCommand. This service does not own
+    # the schema and must not change it on deploy.
+    #
+    # It used to run `npx prisma db push --accept-data-loss` here. With
+    # `autoDeployTrigger: commit` above, that pointed Prisma at production on
+    # every single push, and `db push` drops whatever `schema.prisma` does
+    # not mention. On 2026-08-20 that was found to have removed
+    # `merchants.busy_until`, `push_outbox` and `order_messages` from
+    # CartmanPH — the first broke every food and grocery order placed through
+    # `place_order`, the second broke every insert and status update on
+    # `orders`, because their triggers survived and the table did not.
+    # `db push` writes no `_prisma_migrations` row, so it left no trace and
+    # the migrations still read as applied.
+    #
+    # DDL comes from cartman-mobile/supabase/migrations/, applied with the
+    # Supabase CLI or supabase/scripts/apply-pending.mjs. The Prisma client is
+    # generated in `postinstall`, which needs no database.
+    # ─────────────────────────────────────────────────────────────────────
     envVars:
       - key: NODE_VERSION
         value: 24.13.0
@@ -25,7 +40,8 @@ services:
       # Supabase Postgres — transaction-mode pooler (app runtime queries)
       - key: DATABASE_URL
         sync: false
-      # Supabase Postgres — session-mode pooler (used by `prisma db push`)
+      # Supabase Postgres — session-mode pooler. Kept for `npm run db:drift`
+      # and for one-off introspection; nothing on the deploy path writes DDL.
       - key: DIRECT_URL
         sync: false
 

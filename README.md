@@ -73,11 +73,28 @@ The full endpoint reference lives in the docs repo (sibling checkout):
 
 ## Database provisioning order
 
-On a fresh database, apply `cartman-mobile/supabase/migrations/*.sql` first
-(source of truth — creates `public.order_ref_seq` and the `orders.ref_no`
-trigger, which `prisma db push` cannot create), then run `npx prisma db push`
-second to sync `schema.prisma`. `prisma/seed.ts` also creates `order_ref_seq`
-idempotently as a safety net if it's ever missing.
+**Do not run `prisma db push` against a database anyone else uses.** It drops
+whatever `schema.prisma` does not mention and records nothing in
+`_prisma_migrations`, so it leaves no trace. It sat on this service's deploy
+path until 2026-08-23, and it removed `merchants.busy_until`, `push_outbox`
+and `order_messages` from CartmanPH — the first broke every food and grocery
+order placed through `place_order`, the second broke every insert and status
+update on `orders`, because the triggers survived and the table did not.
+
+`cartman-mobile/supabase/migrations/*.sql` is the only source of DDL. On a
+fresh database, apply them in order and stop there — they create everything,
+including what Prisma cannot express: `public.order_ref_seq` and the
+`orders.ref_no` trigger, every RLS policy, the `menu_items.search_tsv`
+generation expression and its GIN index, the `rider_wallet_balance` view.
+`prisma/seed.ts` also creates `order_ref_seq` idempotently as a safety net if
+it's ever missing.
+
+`schema.prisma` only ever mirrors that schema. After applying a migration in
+cartman-mobile, verify the mirror still matches:
+
+```bash
+npm run db:drift   # read-only; exits non-zero on any difference
+```
 
 ## Supabase Database Webhooks
 
