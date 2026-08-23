@@ -3,6 +3,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { PushDrainService } from './push-drain.service';
 import { StuckOrderService } from './stuck-order.service';
 import { ArrivalService } from './arrival.service';
+import { StalledClaimService } from './stalled-claim.service';
 import {
   PushSendClient,
   PUSH_SENDER,
@@ -52,7 +53,19 @@ import {
     // H10, same reasoning: it produces push_outbox rows and changes no order
     // state, so it is a producer for the drainer rather than order logic.
     ArrivalService,
+    // H17's acting half, and the exception to the rule above: this one *does*
+    // change order state — it puts an abandoned claim back on the feed. It
+    // sits here anyway because it is the other half of StuckOrderService and
+    // splitting the pair across two modules would hide that one exists.
+    // Kept a separate class so StuckOrderService keeps its guarantee of
+    // touching nothing, which is what makes it safe to run unattended.
+    StalledClaimService,
   ],
-  exports: [PushDrainService, StuckOrderService, ArrivalService],
+  exports: [
+    PushDrainService,
+    StuckOrderService,
+    ArrivalService,
+    StalledClaimService,
+  ],
 })
 export class PushModule {}

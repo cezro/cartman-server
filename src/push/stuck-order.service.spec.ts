@@ -22,6 +22,8 @@ describe('StuckOrderService', () => {
     id: 'ord-1',
     ref_no: 'CT-1001',
     customer_id: 'cust-1',
+    status: 'ready_for_pickup',
+    updated_at: new Date(Date.now() - 20 * 60_000),
     ...over,
   });
 
@@ -37,21 +39,116 @@ describe('StuckOrderService', () => {
     service = new StuckOrderService(prisma as unknown as PrismaService);
   });
 
+  interface SweepWhere {
+    status: { notIn: string[] };
+    OR: {
+      status: { in?: string[]; notIn?: string[] };
+      updated_at: { lt: Date };
+    }[];
+  }
+  const sweepWhere = (): SweepWhere =>
+    (prisma.orders.findMany.mock.calls[0] as [{ where: SweepWhere }])[0].where;
+
   it('only considers non-terminal orders that have gone quiet', async () => {
     await service.sweep();
 
-    const [call] = prisma.orders.findMany.mock.calls[0] as [
-      { where: { status: { notIn: string[] }; updated_at: { lt: Date } } },
-    ];
     // An allow-list of "still running" would silently gain every new status
     // ever added; the terminal set is the short, stable one. (This repo has
     // already been bitten by the inverse: three guards spelled the terminal
     // set as `notIn: [delivered, canceled]`, so `delivery_failed` escaped it
     // and counted as active.)
-    expect(call.where.status.notIn).toEqual(
+    expect(sweepWhere().status.notIn).toEqual(
       expect.arrayContaining(['delivered', 'canceled', 'delivery_failed']),
     );
-    expect(call.where.updated_at.lt).toBeInstanceOf(Date);
+    for (const branch of sweepWhere().OR) {
+      expect(branch.updated_at.lt).toBeInstanceOf(Date);
+    }
+  });
+
+  // `orders_set_updated_at` fires on UPDATE, and nothing updates the row
+  // during a drive — telemetry goes to `rider_locations`. So a healthy
+  // 25-minute delivery is indistinguishable from an abandoned one on a single
+  // clock, and the sweep used to call both stuck at 15 minutes.
+  it('gives an order the rider is carrying a longer clock than one in a queue', async () => {
+    await service.sweep();
+
+    const carrying = sweepWhere().OR.find((b) =>
+      b.status.in?.includes('in_transit'),
+    );
+    const queued = sweepWhere().OR.find((b) => b.status.notIn);
+
+    expect(carrying).toBeDefined();
+    expect(queued).toBeDefined();
+    expect(carrying!.status.in).toEqual(
+      expect.arrayContaining(['picked_up', 'in_transit']),
+    );
+    // The carrying cutoff reaches further back, so it takes longer to trip.
+    expect(carrying!.updated_at.lt.getTime()).toBeLessThan(
+      queued!.updated_at.lt.getTime(),
+    );
+    // and the queue branch must not also match a carried order, or the longer
+    // clock is decorative.
+    expect(queued!.status.notIn).toEqual(
+      expect.arrayContaining(['picked_up', 'in_transit']),
+    );
+  });
+
+  describe('the customer is told which party everyone is waiting on', () => {
+    const bodyFor = async (status: string): Promise<string> => {
+      prisma.orders.findMany.mockResolvedValue([order({ status })]);
+      await service.sweep();
+      const [{ data: rows }] = prisma.push_outbox.createMany.mock.calls[0] as [
+        { data: { user_id: string; title: string; body: string }[] },
+      ];
+      const row = rows.find((r) => r.user_id === 'cust-1')!;
+      return `${row.title} ${row.body}`;
+    };
+
+    // The bug this replaces: one sentence, "Still looking for a rider", sent
+    // for every stuck order regardless of status. To someone whose rider is
+    // five minutes from their door that is not just unhelpful — it is wrong in
+    // the direction that causes the support call it exists to prevent.
+    it('does not claim there is no rider when a rider is carrying the order', async () => {
+      for (const status of ['picked_up', 'in_transit']) {
+        prisma.push_outbox.createMany.mockClear();
+        expect(await bodyFor(status)).not.toMatch(/looking for a rider/i);
+      }
+    });
+
+    it('does not claim there is no rider when one is already assigned', async () => {
+      for (const status of ['accepted', 'arrived_at_merchant']) {
+        prisma.push_outbox.createMany.mockClear();
+        expect(await bodyFor(status)).not.toMatch(/looking for a rider/i);
+      }
+    });
+
+    it('still says exactly that when the order really is waiting for a rider', async () => {
+      expect(await bodyFor('ready_for_pickup')).toMatch(/looking for a rider/i);
+    });
+
+    it('blames the store, not the rider, before the store has confirmed', async () => {
+      expect(await bodyFor('pending')).toMatch(/store/i);
+    });
+  });
+
+  it('tells the admin how long it has really been quiet, not the threshold', async () => {
+    prisma.orders.findMany.mockResolvedValue([
+      order({
+        status: 'preparing',
+        updated_at: new Date(Date.now() - 120 * 60_000),
+      }),
+    ]);
+
+    await service.sweep();
+
+    const [{ data: rows }] = prisma.push_outbox.createMany.mock.calls[0] as [
+      { data: { user_id: string; body: string }[] },
+    ];
+    const admin = rows.find((r) => r.user_id === 'admin-1')!;
+    // "has not moved in 15 minutes" on an order that has been quiet for two
+    // hours reads as a fresh problem and buries the older one.
+    expect(admin.body).toMatch(/120 minutes/);
+    expect(admin.body).toMatch(/preparing/);
   });
 
   it('tells the customer and every admin that an order is stuck', async () => {
