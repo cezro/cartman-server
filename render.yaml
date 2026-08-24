@@ -3,6 +3,17 @@ services:
     type: web
     runtime: node
     region: singapore # closest Render region to the Supabase ap-northeast-1 project
+    # ⚠️ ONE INSTANCE IS LOAD-BEARING. `standard` is a scalable plan and this
+    # deliberately declares no `numInstances`, because all four @Cron sweepers
+    # in src/push guard themselves with a per-process flag, not a lock. Two
+    # replicas would run every sweep over the same rows: PushDrainService
+    # delivers each notification twice until `sent_at` lands, and Arrival and
+    # StuckOrder read-then-createMany with no guard between, which is a plain
+    # TOCTOU — duplicate outbox rows, then duplicate pushes. (StalledClaim is
+    # safe: its conditional updateMany means only one writer wins, the same
+    # pattern as the order claim.) Before scaling horizontally, take a
+    # pg_try_advisory_lock per sweeper, released in the same `finally` that
+    # clears the flag.
     plan: standard
     buildCommand: npm ci && npm run build
     startCommand: npm run start:prod
@@ -25,7 +36,11 @@ services:
     #
     # DDL comes from cartman-mobile/supabase/migrations/, applied with the
     # Supabase CLI or supabase/scripts/apply-pending.mjs. The Prisma client is
-    # generated in `postinstall`, which needs no database.
+    # generated in `postinstall`, which opens no connection — but note it does
+    # still *load* prisma.config.ts, and Prisma 7 resolves the datasource at
+    # load. `env('DIRECT_URL')` therefore used to fail the install outright on
+    # any checkout without the variable set; prisma.config.ts now falls back to
+    # a placeholder so codegen no longer depends on deployment config at all.
     # ─────────────────────────────────────────────────────────────────────
     envVars:
       - key: NODE_VERSION
@@ -40,8 +55,11 @@ services:
       # Supabase Postgres — transaction-mode pooler (app runtime queries)
       - key: DATABASE_URL
         sync: false
-      # Supabase Postgres — session-mode pooler. Kept for `npm run db:drift`
-      # and for one-off introspection; nothing on the deploy path writes DDL.
+      # Supabase Postgres — session-mode pooler. Used by `npm run db:drift` and
+      # for one-off introspection; nothing on the deploy path writes DDL.
+      # Not "unused config" — see the note above `buildCommand`. It is safe to
+      # remove only in the sense that the deploy will still build; drift
+      # checking and every migration command lose their connection.
       - key: DIRECT_URL
         sync: false
 

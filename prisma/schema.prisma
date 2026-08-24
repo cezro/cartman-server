@@ -29,6 +29,15 @@
 // `autoDeployTrigger: commit` — so the wipe was automated, not a slip.
 // That line is gone; the deploy no longer touches DDL.
 //
+// `npm run db:drift` keeps this mirror honest, but only for what Prisma can
+// model: **tables, columns and enums.** It is blind to policies, grants,
+// triggers, functions and indexes — which is to say, blind to the fourth item
+// in the list above. A green drift run means `db push` would not drop a table
+// or a column; it says nothing about who can read what. For that, and for
+// anything else this file cannot express — `menu_items.search_tsv` and its GIN
+// index, `push_outbox`'s partial index, the `rider_wallet_balance` view —
+// cartman-mobile's supabase/migrations/ is the only authority.
+//
 // Provisioning a *fresh* database: apply the Supabase migrations, in order,
 // and nothing else. They create what `db push` cannot — `order_ref_seq`
 // and its trigger, every RLS policy, every trigger, every grant, the

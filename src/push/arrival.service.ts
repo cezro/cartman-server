@@ -27,6 +27,20 @@ const FIX_FRESHNESS_MS = 3 * 60_000;
 /** How many orders one pass will consider. */
 const SWEEP_BATCH = 200;
 
+/**
+ * How far back the de-duplication looks.
+ *
+ * `push_outbox`'s only index is partial — `(created_at) where sent_at is null`
+ * — and the rows this reads are already sent, so **no index can serve this
+ * query**. An unbounded read therefore scans the whole table every minute, and
+ * that table grows a row per order transition forever. A window is the defence.
+ *
+ * A day is far longer than any order stays live. One that is somehow still open
+ * past it and re-enters the radius earns a second notification — a better
+ * failure than scanning the platform's entire arrival history once a minute.
+ */
+const DEDUP_WINDOW_MS = 24 * 60 * 60_000;
+
 /** Before the goods are collected, the endpoint that matters is the store. */
 const PRE_PICKUP: order_status[] = [
   order_status.accepted,
@@ -93,6 +107,13 @@ export class ArrivalService {
         dropoff_lng: true,
         merchant: { select: { name: true, lat: true, lng: true } },
       },
+      // An unordered LIMIT in Postgres returns an arbitrary 200 rows, and which
+      // 200 can change between passes over identical data — so past 200 live
+      // orders this would stop processing a backlog and start *sampling* it,
+      // with an order able to sit inside the radius and never be picked.
+      // Oldest-touched first makes the batch a queue, matching the three
+      // sibling sweepers.
+      orderBy: { updated_at: 'asc' },
       take: SWEEP_BATCH,
     });
     if (live.length === 0) return { arrivals: 0, notified: 0 };
@@ -116,22 +137,6 @@ export class ArrivalService {
         latest.set(f.order_id, { lat: f.lat, lng: f.lng });
       }
     }
-
-    // Keyed on order *and* event: both arrivals happen on the same order, so
-    // de-duping on order_id alone would mean the customer is never told the
-    // rider is at the door.
-    const announced = await this.prisma.push_outbox.findMany({
-      where: { event: { in: [AT_MERCHANT_EVENT, AT_DROPOFF_EVENT] } },
-      select: { event: true, data: true },
-    });
-    const seen = new Set(
-      announced
-        .map((r) => {
-          const id = (r.data as { order_id?: string } | null)?.order_id;
-          return id ? `${r.event}:${id}` : null;
-        })
-        .filter((k): k is string => k !== null),
-    );
 
     const arrived: {
       order: (typeof live)[number];
@@ -159,10 +164,10 @@ export class ArrivalService {
         haversineKm(fix.lat, fix.lng, target.lat, target.lng) * 1000;
       if (metres > ARRIVAL_RADIUS_M) continue;
 
-      const event = carrying ? AT_DROPOFF_EVENT : AT_MERCHANT_EVENT;
-      if (seen.has(`${event}:${o.id}`)) continue;
-
-      arrived.push({ order: o, event });
+      arrived.push({
+        order: o,
+        event: carrying ? AT_DROPOFF_EVENT : AT_MERCHANT_EVENT,
+      });
     }
     if (arrived.length === 0) return { arrivals: 0, notified: 0 };
 
@@ -204,11 +209,56 @@ export class ArrivalService {
     });
     if (rows.length === 0) return { arrivals: 0, notified: 0 };
 
-    await this.prisma.push_outbox.createMany({ data: rows });
-
-    this.logger.log(
-      `Arrival sweep: ${arrived.length} arrivals, ${rows.length} notified`,
+    // De-dup runs *last*, not first, and is bounded twice over.
+    //
+    // Bounded because this cannot use `push_outbox`'s only index (partial, on
+    // unsent rows) and the table only grows: restricting it to the recipients
+    // we are about to write for and to a recent window is what keeps it from
+    // materialising the platform's entire arrival history once a minute.
+    //
+    // Last because most passes find nobody has arrived, and those now pay for
+    // no de-dup query at all — the same reasoning that already defers the
+    // `merchant_users` join below the radius check.
+    //
+    // Keyed on order *and* event: both arrivals happen on the same order, so
+    // de-duping on `order_id` alone would mean the customer is never told the
+    // rider is at the door.
+    //
+    // This reads rows that have already been *sent*, which makes the outbox a
+    // record and not only a queue. That is a deliberate contract, not an
+    // oversight — `20260810000200_push_outbox.sql` carries the matching note,
+    // and it is why those rows must never be pruned.
+    const announced = await this.prisma.push_outbox.findMany({
+      where: {
+        event: { in: [AT_MERCHANT_EVENT, AT_DROPOFF_EVENT] },
+        user_id: { in: [...new Set(rows.map((r) => r.user_id))] },
+        created_at: { gte: new Date(Date.now() - DEDUP_WINDOW_MS) },
+      },
+      select: { event: true, data: true },
+    });
+    const seen = new Set(
+      announced
+        .map((r) => {
+          const id = (r.data as { order_id?: string } | null)?.order_id;
+          return id ? `${r.event}:${id}` : null;
+        })
+        .filter((k): k is string => k !== null),
     );
-    return { arrivals: arrived.length, notified: rows.length };
+
+    const fresh = rows.filter(
+      (r) => !seen.has(`${r.event}:${r.data.order_id}`),
+    );
+    if (fresh.length === 0) return { arrivals: 0, notified: 0 };
+
+    await this.prisma.push_outbox.createMany({ data: fresh });
+
+    // Counted from what was actually written: one arrival can fan out to
+    // several store members, and a partly-announced order must not be counted
+    // twice.
+    const arrivals = new Set(fresh.map((r) => r.data.order_id)).size;
+    this.logger.log(
+      `Arrival sweep: ${arrivals} arrivals, ${fresh.length} notified`,
+    );
+    return { arrivals, notified: fresh.length };
   }
 }

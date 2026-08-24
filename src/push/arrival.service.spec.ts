@@ -105,6 +105,63 @@ describe('ArrivalService', () => {
     expect(result).toEqual({ arrivals: 1, notified: 1 });
   });
 
+  // ── Review findings on this sweep, each pinned by the shape of the query
+  // rather than by its result — the defects were invisible in the outcome and
+  // only showed up in what was sent to Postgres.
+
+  it('bounds the de-dup read by recipient and by a recent window', async () => {
+    prisma.orders.findMany.mockResolvedValue([order({ status: 'in_transit' })]);
+    prisma.rider_locations.findMany.mockResolvedValue([fix(NEAR_DROPOFF)]);
+
+    await service.sweep();
+
+    const [args] = prisma.push_outbox.findMany.mock.calls[0] as [
+      {
+        where: {
+          user_id?: { in: string[] };
+          created_at?: { gte: Date };
+          event: { in: string[] };
+        };
+      },
+    ];
+    // Unbounded, this read every arrival notification ever written, once a
+    // minute, forever. `push_outbox`'s only index is partial (`where sent_at
+    // is null`) and these rows are sent, so nothing can serve the query —
+    // keeping the row set small is the entire defence.
+    expect(args.where.user_id?.in).toEqual(['cust-1']);
+    expect(args.where.created_at?.gte).toBeInstanceOf(Date);
+    expect(args.where.event.in).toEqual([
+      'rider.at_merchant',
+      'rider.at_dropoff',
+    ]);
+  });
+
+  it('does not read the outbox at all when nobody has arrived', async () => {
+    prisma.orders.findMany.mockResolvedValue([order({ status: 'accepted' })]);
+    prisma.rider_locations.findMany.mockResolvedValue([fix(FAR)]);
+
+    await service.sweep();
+
+    // Most passes find nobody, and they should cost one query, not three.
+    // Same reasoning that already defers the `merchant_users` join.
+    expect(prisma.push_outbox.findMany).not.toHaveBeenCalled();
+    expect(prisma.merchant_users.findMany).not.toHaveBeenCalled();
+  });
+
+  it('orders the live-order batch instead of sampling it', async () => {
+    await service.sweep();
+
+    const [args] = prisma.orders.findMany.mock.calls[0] as [
+      { orderBy?: unknown; take?: number },
+    ];
+    // An unordered LIMIT in Postgres returns an arbitrary 200 rows, and which
+    // 200 can change between passes over identical data — so past 200 live
+    // orders an order could sit inside the radius and never be picked, with
+    // nothing recording that it was skipped.
+    expect(args.orderBy).toEqual({ updated_at: 'asc' });
+    expect(args.take).toBe(200);
+  });
+
   it('does not fire when the rider is still far away', async () => {
     prisma.orders.findMany.mockResolvedValue([order({ status: 'accepted' })]);
     prisma.rider_locations.findMany.mockResolvedValue([fix(FAR)]);

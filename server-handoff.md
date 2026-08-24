@@ -146,20 +146,54 @@ What landed:
   address**. No address at all ⇒ 400, because the alternative is a paid order
   the merchant cooks and nobody can deliver.
 
-### Schema drift — mostly closed since 08-07. **Verified in this repo 08-13.**
+### Schema drift — the mirror is reconciled, and `db push` is off the deploy path
 
-The mobile copy of this doc still says `pod_photo_url`, `pod_note`,
-`delivered_at`, `incident_reports`, `order_assignment_events` and
-`verification_events` are missing from `schema.prisma`. **They are not — all
-six are present on `main`**, closed by `af8aae3` (db-schema-sync) and `efba4b5`
-(incident-enums-sync). Do not "fix" them again.
+> **This section used to say drift was "mostly closed, verified 08-13" and name
+> two remaining gaps. That was written a week before the incident below, and it
+> was stale inside the very PR that fixed it. Rewritten 2026-08-24.**
 
-**What is still absent, and it is now only two things:**
+**What happened.** On 2026-08-20 four objects were found missing from CartmanPH
+while their migrations were still recorded as applied: `merchants.busy_until`,
+`push_outbox`, `order_messages`, and the policies + grants on
+`incident_reports` / `verification_events`. Two were live outages —
+`place_order` raised *"column m.busy_until does not exist"* on every food and
+grocery order, and the `orders` push triggers raised on every insert and status
+update, because the triggers survived and their table did not.
 
-| Missing from `schema.prisma` | Consequence |
+**What caused it.** Not a person. `render.yaml` carried
+`preDeployCommand: npx prisma db push --accept-data-loss` next to
+`autoDeployTrigger: commit`, so **every push to the deployed branch re-ran it
+against production.** `db push` drops what `schema.prisma` does not mention and
+writes no `_prisma_migrations` row — objects gone, migrations still recorded,
+no trace.
+
+**What this branch does about it.**
+
+| | |
 |---|---|
-| `order_messages` | Chat is read by the clients over Supabase directly; nothing here touches it. Harmless today. |
-| **`push_outbox`** | **Matters for §1.** The drainer has no Prisma model to read through — see §1. |
+| `db push` | Removed from `render.yaml`. The deploy touches no DDL at all |
+| The mirror | `order_messages` and `push_outbox` both modelled — 21 → 23 models, so the two gaps this section used to list are closed |
+| The guard | `npm run db:drift` — read-only, diffs `schema.prisma` against a live database, exits non-zero on any difference and names which direction each runs. Run it after every migration applied in cartman-mobile |
+
+**Reconciling the mirror is necessary but not sufficient, which is why the ban
+is absolute rather than "keep it in sync and it's fine".** Prisma cannot express
+`menu_items.search_tsv` (generated stored), its GIN index, `push_outbox`'s
+partial index, or the `rider_wallet_balance` view — `db push` would damage the
+schema even with a perfect mirror.
+
+**And `db:drift` cannot see the class the incident's fourth item belongs to.**
+It compares tables, columns and enums; policies, grants, triggers, functions and
+indexes are outside what Prisma models. A green run means `db push` would not
+drop a table or a column — it is not a statement about who can read what.
+`supabase/migrations/` in cartman-mobile stays the only authority there.
+
+> **One item from the 08-20 write-up is now closed, contrary to what
+> cartman-mobile's copy still said.** That doc carried *"CartmanPH still has the
+> wider grant — the corrected `20260820000100` needs re-running against it."*
+> **Checked live 2026-08-24: it does not.** `authenticated` holds INSERT on
+> `order_messages(order_id, sender_id, body)` only, with no table-wide INSERT,
+> so a client cannot supply `created_at` and backdate a message. Nothing to
+> re-run. The mobile doc has been corrected.
 
 Adding a column here changes what Prisma SELECTs and therefore what the API
 returns, so each addition stays a deliberate call rather than a tidy-up. Note

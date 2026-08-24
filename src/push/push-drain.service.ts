@@ -37,6 +37,22 @@ export class PushDrainService {
    * Guards against overlapping passes. The poll interval is far shorter than a
    * batch of 50 HTTP sends can take, and a second pass would read the same
    * not-yet-stamped rows and send every one of them a second time.
+   *
+   * **This is an instance field, so it guards passes within one process — and
+   * that means one instance is currently load-bearing.** `render.yaml` declares
+   * `plan: standard` with no `numInstances`; the day someone scales to two,
+   * both replicas run this sweep over the same rows and every notification goes
+   * out twice until `sent_at` lands. The same applies to ArrivalService and
+   * StuckOrderService, which read-then-`createMany` with no guard between.
+   * (StalledClaimService is safe: its conditional `updateMany` means only one
+   * writer wins.)
+   *
+   * Making it structural is a few lines — `pg_try_advisory_lock` on a
+   * per-sweeper key, released in the same `finally` that clears this flag, on
+   * the connection we already hold. Until then the constraint is recorded here
+   * and beside `plan:` in `render.yaml`, because it is invisible at exactly the
+   * moment someone would violate it: under load, when scaling up is the obvious
+   * move.
    */
   private running = false;
 

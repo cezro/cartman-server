@@ -23,6 +23,25 @@
  * Exit 0 = the schema matches. Non-zero = it does not, and the report says
  * which way each difference runs — a "live-only" column is one `db push` would
  * DROP, which is the direction that costs data.
+ *
+ * What this CANNOT see
+ * --------------------
+ * It compares **tables, columns and enum values only**. It does not compare
+ * policies, grants, triggers, functions, indexes, defaults, nullability, or
+ * column types — Prisma models none of those, so this is a limit of the
+ * approach and not a gap in the code.
+ *
+ * That matters more than it sounds, because of what the 08-20 incident
+ * actually was. Four objects were lost: `busy_until`, `push_outbox`,
+ * `order_messages` — all three of which this would have caught — **and the
+ * policies and grants on `incident_reports` / `verification_events`, which it
+ * would have been blind to.**
+ *
+ * So a clean run here means the *mirror* is honest. It is not a statement
+ * about policies or grants, and `schema.prisma` cannot be one either:
+ * `supabase/migrations/` in cartman-mobile is the only authority for those.
+ * Read a green result as "`db push` would not drop a table or a column", not
+ * as "the drift story is finished".
  */
 import 'dotenv/config';
 import { readFileSync } from 'node:fs';
@@ -246,9 +265,17 @@ async function main(): Promise<void> {
   }
 
   if (!problems.length) {
+    // Counted from the ignored tables actually present, not from the size of
+    // the ignore list — a database with no `_prisma_migrations` would
+    // otherwise be reported as having one table fewer than it has.
+    const ignoredPresent = [...IGNORED_TABLES].filter((t) =>
+      live.tables.has(t),
+    ).length;
     console.log(
       `schema.prisma matches the database: ` +
-        `${live.tables.size - IGNORED_TABLES.size} tables, ${live.enums.size} enums.`,
+        `${live.tables.size - ignoredPresent} tables, ${live.enums.size} enums. ` +
+        `(Tables, columns and enums only — not policies, grants, triggers, ` +
+        `functions or indexes; supabase/migrations is the authority for those.)`,
     );
     return;
   }
