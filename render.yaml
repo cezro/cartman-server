@@ -3,15 +3,45 @@ services:
     type: web
     runtime: node
     region: singapore # closest Render region to the Supabase ap-northeast-1 project
+    # ⚠️ ONE INSTANCE IS LOAD-BEARING. `standard` is a scalable plan and this
+    # deliberately declares no `numInstances`, because all four @Cron sweepers
+    # in src/push guard themselves with a per-process flag, not a lock. Two
+    # replicas would run every sweep over the same rows: PushDrainService
+    # delivers each notification twice until `sent_at` lands, and Arrival and
+    # StuckOrder read-then-createMany with no guard between, which is a plain
+    # TOCTOU — duplicate outbox rows, then duplicate pushes. (StalledClaim is
+    # safe: its conditional updateMany means only one writer wins, the same
+    # pattern as the order claim.) Before scaling horizontally, take a
+    # pg_try_advisory_lock per sweeper, released in the same `finally` that
+    # clears the flag.
     plan: standard
     buildCommand: npm ci && npm run build
     startCommand: npm run start:prod
     healthCheckPath: /
     autoDeployTrigger: commit
-    # Supabase migrations (cartman-mobile/supabase/migrations/) are the source of truth
-    # for DDL. schema.prisma mirrors them. --accept-data-loss allows non-interactive
-    # deployments to proceed when Prisma schema syncs.
-    preDeployCommand: npx prisma db push --accept-data-loss
+    # ─────────────────────────────────────────────────────────────────────
+    # There is deliberately NO preDeployCommand. This service does not own
+    # the schema and must not change it on deploy.
+    #
+    # It used to run `npx prisma db push --accept-data-loss` here. With
+    # `autoDeployTrigger: commit` above, that pointed Prisma at production on
+    # every single push, and `db push` drops whatever `schema.prisma` does
+    # not mention. On 2026-08-20 that was found to have removed
+    # `merchants.busy_until`, `push_outbox` and `order_messages` from
+    # CartmanPH — the first broke every food and grocery order placed through
+    # `place_order`, the second broke every insert and status update on
+    # `orders`, because their triggers survived and the table did not.
+    # `db push` writes no `_prisma_migrations` row, so it left no trace and
+    # the migrations still read as applied.
+    #
+    # DDL comes from cartman-mobile/supabase/migrations/, applied with the
+    # Supabase CLI or supabase/scripts/apply-pending.mjs. The Prisma client is
+    # generated in `postinstall`, which opens no connection — but note it does
+    # still *load* prisma.config.ts, and Prisma 7 resolves the datasource at
+    # load. `env('DIRECT_URL')` therefore used to fail the install outright on
+    # any checkout without the variable set; prisma.config.ts now falls back to
+    # a placeholder so codegen no longer depends on deployment config at all.
+    # ─────────────────────────────────────────────────────────────────────
     envVars:
       - key: NODE_VERSION
         value: 24.13.0
@@ -25,7 +55,11 @@ services:
       # Supabase Postgres — transaction-mode pooler (app runtime queries)
       - key: DATABASE_URL
         sync: false
-      # Supabase Postgres — session-mode pooler (used by `prisma db push`)
+      # Supabase Postgres — session-mode pooler. Used by `npm run db:drift` and
+      # for one-off introspection; nothing on the deploy path writes DDL.
+      # Not "unused config" — see the note above `buildCommand`. It is safe to
+      # remove only in the sense that the deploy will still build; drift
+      # checking and every migration command lose their connection.
       - key: DIRECT_URL
         sync: false
 

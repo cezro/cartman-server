@@ -129,6 +129,30 @@ export class OrdersService {
       });
       if (!merchant) throw new BadRequestException('Merchant not found');
 
+      // A store that paused while the customer was building a basket would
+      // otherwise be handed an order it has already said it cannot cook.
+      //
+      // The DB twin `place_order` grew the same guard in
+      // 20260818000100_merchant_busy_until.sql, and its header calls this path
+      // out by name: this service writes `orders` through Prisma rather than
+      // calling that RPC, so the guard has to exist in both or a client one
+      // version behind still gets in. Keep the two in step.
+      //
+      // Strictly `>`: `busy_until` is the moment the pause ends, so a store is
+      // taking orders again *at* that instant. Null, or any past instant, is
+      // trading normally — the timestamp expires on its own, which is why it is
+      // not an `is_busy` flag. Treating non-null as busy would shut a store
+      // permanently the first time it paused.
+      if (merchant.busy_until && merchant.busy_until > new Date()) {
+        // 409, not 400: the request is well formed and the customer did
+        // nothing wrong — the store's state refuses, and it will stop refusing
+        // by itself. Same sentence the RPC raises, so the customer sees one
+        // wording whichever write path their app version uses.
+        throw new ConflictException(
+          'This store has paused new orders. Please try again shortly.',
+        );
+      }
+
       let subtotal = 0n;
       // Unchecked variant: these rows carry the `menu_item_id` FK directly
       // rather than a nested relation connect.

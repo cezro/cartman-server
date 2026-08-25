@@ -6,12 +6,46 @@
 // Money is stored as BigInt centavos (₱99.00 = 9900).
 // Column names match the existing DB exactly.
 //
-// Provisioning order for a fresh database: apply cartman-mobile's
-// supabase/migrations/*.sql FIRST (source of truth — creates things
-// `prisma db push` cannot, like `public.order_ref_seq` and its trigger),
-// then run `prisma db push` second to sync this schema. `prisma/seed.ts`
-// also creates `order_ref_seq` idempotently as a safety net, but the
-// migrations remain the source of truth for it.
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║ DO NOT RUN `prisma db push` AGAINST A DATABASE ANYONE ELSE USES.        ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+//
+// This file is a *mirror*, never a source. cartman-mobile's
+// supabase/migrations/*.sql is the only thing allowed to change DDL.
+//
+// On 2026-08-20 four objects were found missing from CartmanPH while their
+// migrations were still recorded as applied: `merchants.busy_until`,
+// `push_outbox`, `order_messages`, and the policies+grants on
+// `incident_reports` / `verification_events`. Two of those were live
+// outages — `place_order` raised "column m.busy_until does not exist" on
+// every food and grocery order, and the `orders` push triggers raised on
+// every insert and status update. See cartman-mobile
+// supabase/migrations/20260820000100_restore_objects_lost_to_schema_drift.sql
+//
+// `db push` drops whatever is not in this file and writes nothing to
+// `_prisma_migrations`, which is exactly the trace that was left. It ran on
+// every deploy — `render.yaml` carried
+// `preDeployCommand: npx prisma db push --accept-data-loss` with
+// `autoDeployTrigger: commit` — so the wipe was automated, not a slip.
+// That line is gone; the deploy no longer touches DDL.
+//
+// `npm run db:drift` keeps this mirror honest, but only for what Prisma can
+// model: **tables, columns and enums.** It is blind to policies, grants,
+// triggers, functions and indexes — which is to say, blind to the fourth item
+// in the list above. A green drift run means `db push` would not drop a table
+// or a column; it says nothing about who can read what. For that, and for
+// anything else this file cannot express — `menu_items.search_tsv` and its GIN
+// index, `push_outbox`'s partial index, the `rider_wallet_balance` view —
+// cartman-mobile's supabase/migrations/ is the only authority.
+//
+// Provisioning a *fresh* database: apply the Supabase migrations, in order,
+// and nothing else. They create what `db push` cannot — `order_ref_seq`
+// and its trigger, every RLS policy, every trigger, every grant, the
+// `search_tsv` generation expression, the `rider_wallet_balance` view.
+//
+// Keeping this file honest: `npm run db:drift` diffs it against a live
+// database and exits non-zero on any difference. Run it after every migration
+// applied in cartman-mobile.
 
 generator client {
   provider = "prisma-client-js"
@@ -132,19 +166,21 @@ model profiles {
   auth_deleted_at DateTime? @db.Timestamptz()
 
   // Relations
-  addresses                addresses[]
-  orders_as_customer       orders[]           @relation("customer_orders")
-  orders_as_rider          orders[]           @relation("rider_orders")
-  rider                    riders?
-  device_tokens            device_tokens[]
-  otp_codes                otp_codes[]
-  merchant_users           merchant_users[]
-  ratings_given            order_ratings[]           @relation("customer_ratings")
-  ratings_received         order_ratings[]           @relation("rider_ratings")
-  rider_assignment_events  order_assignment_events[] @relation("rider_assignment_events")
-  actor_assignment_events  order_assignment_events[] @relation("actor_assignment_events")
-  incident_reports_filed   incident_reports[]        @relation("reporter_incidents")
+  addresses                 addresses[]
+  orders_as_customer        orders[]                  @relation("customer_orders")
+  orders_as_rider           orders[]                  @relation("rider_orders")
+  rider                     riders?
+  device_tokens             device_tokens[]
+  otp_codes                 otp_codes[]
+  merchant_users            merchant_users[]
+  ratings_given             order_ratings[]           @relation("customer_ratings")
+  ratings_received          order_ratings[]           @relation("rider_ratings")
+  rider_assignment_events   order_assignment_events[] @relation("rider_assignment_events")
+  actor_assignment_events   order_assignment_events[] @relation("actor_assignment_events")
+  incident_reports_filed    incident_reports[]        @relation("reporter_incidents")
   verification_events_acted verification_events[]     @relation("actor_verifications")
+  push_outbox               push_outbox[]
+  order_messages_sent       order_messages[]
 }
 
 // ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
@@ -168,15 +204,15 @@ model addresses {
 // ── merchants + menu ────────────────────────────────────────────────────
 
 model merchants {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name            String
-  category        String   @default("")
-  rating          Decimal  @default(0)
-  delivery_fee    BigInt   @default(0)
-  min_order       BigInt   @default(0)
-  eta_minutes     Int      @default(0)
-  is_open         Boolean  @default(true)
-  is_verified     Boolean  @default(false)
+  category        String    @default("")
+  rating          Decimal   @default(0)
+  delivery_fee    BigInt    @default(0)
+  min_order       BigInt    @default(0)
+  eta_minutes     Int       @default(0)
+  is_open         Boolean   @default(true)
+  is_verified     Boolean   @default(false)
   image_url       String?
   promo_text      String?
   // Store pin (WGS84) — customer-app "near you" sort; null = unknown.
@@ -185,8 +221,14 @@ model merchants {
   lng             Float?
   // Weekly windows: [{"day":0-6,"open":"HH:MM","close":"HH:MM"}, …].
   // Informational in Phase 1 — is_open is still the single availability flag.
-  operating_hours Json     @default("[]")
-  created_at      DateTime @default(now()) @db.Timestamptz()
+  operating_hours Json      @default("[]")
+  // Paused for new orders until this moment; null or past = trading normally.
+  // A timestamp rather than an `is_busy` flag so the pause expires on its own
+  // — a flag gets switched on at the Saturday peak and off never.
+  // `is_open` stays the separate "trading at all" switch: a closed store is
+  // not busy, it is closed. Mirrors 20260818000100_merchant_busy_until.sql.
+  busy_until      DateTime? @db.Timestamptz()
+  created_at      DateTime  @default(now()) @db.Timestamptz()
 
   // Relations
   menu_items     menu_items[]
@@ -205,8 +247,23 @@ model menu_items {
   description String?
   modifiers   Json    @default("[]")
 
+  // Dish search (20260818000200_menu_item_search.sql). In the database this is
+  // `generated always as (to_tsvector('simple', name || description ||
+  // category)) stored`, with a GIN index over it.
+  //
+  // Prisma can express neither the tsvector type, the generation expression,
+  // nor a GIN index — so this line exists **only** so the column is not seen
+  // as unknown and dropped. `Unsupported` fields are not selectable from the
+  // client, which is correct here: nothing in this server reads it, and the
+  // search that does runs in the database.
+  //
+  // Because the expression and the index cannot be mirrored, a `db push`
+  // would still damage this column even with this line present. That is one
+  // of the reasons `db push` is banned outright at the top of this file.
+  search_tsv Unsupported("tsvector")?
+
   // Relations
-  merchant    merchants    @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+  merchant    merchants     @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
   order_items order_items[]
 
   @@index([merchant_id])
@@ -261,6 +318,13 @@ model orders {
   // (20260803000300 in cartman-mobile), so they have to agree.
   delivered_at DateTime? @db.Timestamptz()
 
+  // When the merchant expects this order to be cooked — the first ETA the
+  // customer sees that is not a guess. Written only by the
+  // `merchant_set_prep_time` RPC (20260818000300_order_prep_time.sql), which
+  // clamps the minutes to a range; a plain column grant would have let the
+  // panel write any instant, including one already past.
+  prep_ready_by DateTime? @db.Timestamptz()
+
   // Proof of delivery, written only by the rider_submit_pod RPC, which the
   // rider app calls directly over Supabase. Present here so Prisma can read
   // them back — without the fields they are simply invisible to this server
@@ -284,16 +348,17 @@ model orders {
   updated_at DateTime @default(now()) @db.Timestamptz()
 
   // Relations
-  customer               profiles                    @relation("customer_orders", fields: [customer_id], references: [id])
-  rider                  profiles?                   @relation("rider_orders", fields: [assigned_rider_id], references: [id])
-  merchant               merchants?                  @relation(fields: [merchant_id], references: [id])
-  order_items            order_items[]
-  order_stops            order_stops[]
-  rider_locations        rider_locations[]
-  wallet_transactions    rider_wallet_transactions[]
-  order_rating           order_ratings?
-  assignment_events      order_assignment_events[]
-  incident_reports       incident_reports[]          @relation("order_incidents")
+  customer            profiles                    @relation("customer_orders", fields: [customer_id], references: [id])
+  rider               profiles?                   @relation("rider_orders", fields: [assigned_rider_id], references: [id])
+  merchant            merchants?                  @relation(fields: [merchant_id], references: [id])
+  order_items         order_items[]
+  order_stops         order_stops[]
+  rider_locations     rider_locations[]
+  wallet_transactions rider_wallet_transactions[]
+  order_rating        order_ratings?
+  assignment_events   order_assignment_events[]
+  incident_reports    incident_reports[]          @relation("order_incidents")
+  order_messages      order_messages[]
 
   @@index([customer_id])
   @@index([assigned_rider_id])
@@ -303,13 +368,13 @@ model orders {
 // ── order_items — structured food/grocery lines ─────────────────────────
 
 model order_items {
-  id           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  order_id     String @db.Uuid
+  id           String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id     String  @db.Uuid
   menu_item_id String? @db.Uuid
   name         String
-  qty          Int    @default(1)
-  unit_price   BigInt @default(0)
-  modifiers    Json   @default("[]")
+  qty          Int     @default(1)
+  unit_price   BigInt  @default(0)
+  modifiers    Json    @default("[]")
 
   // Relations
   order     orders      @relation(fields: [order_id], references: [id], onDelete: Cascade)
@@ -334,6 +399,35 @@ model order_stops {
   order orders @relation(fields: [order_id], references: [id], onDelete: Cascade)
 
   @@index([order_id])
+}
+
+// ── order_messages — customer ↔ rider chat (H6) ─────────────────────────
+//
+// Mirrors 20260803000300_delivery_pod_chat.sql, as narrowed by
+// 20260806000200_tighten_client_grants.sql.
+//
+// **Nothing in this server reads or writes it.** Both apps talk to Supabase
+// directly for chat, over Realtime. It is modelled here for one reason: so
+// that Prisma knows the table exists. It did not, and on 2026-08-20 the table
+// was found missing from CartmanPH with its migration still recorded as
+// applied — chat had no storage at all. See the banner at the top of this file.
+//
+// `authenticated` holds INSERT on (order_id, sender_id, body) only; the
+// remaining columns are database-generated on purpose, so a client cannot
+// backdate a message or forge an id.
+
+model order_messages {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id   String   @db.Uuid
+  sender_id  String   @db.Uuid
+  body       String
+  created_at DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  order  orders   @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  sender profiles @relation(fields: [sender_id], references: [id], onDelete: Cascade)
+
+  @@index([order_id, created_at])
 }
 
 // ── order_ratings — rate & review, one per order (C-7.x) ────────────────
@@ -384,9 +478,9 @@ model riders {
   updated_at        DateTime @default(now()) @db.Timestamptz()
 
   // Relations
-  profile              profiles                    @relation(fields: [id], references: [id], onDelete: Cascade)
-  rider_locations      rider_locations[]
-  wallet_transactions  rider_wallet_transactions[]
+  profile             profiles                    @relation(fields: [id], references: [id], onDelete: Cascade)
+  rider_locations     rider_locations[]
+  wallet_transactions rider_wallet_transactions[]
 }
 
 // ── rider_locations — background telemetry (R-2.1) ──────────────────────
@@ -400,7 +494,7 @@ model rider_locations {
   recorded_at DateTime @default(now()) @db.Timestamptz()
 
   // Relations
-  rider riders @relation(fields: [rider_id], references: [id], onDelete: Cascade)
+  rider riders  @relation(fields: [rider_id], references: [id], onDelete: Cascade)
   order orders? @relation(fields: [order_id], references: [id])
 
   @@index([rider_id, recorded_at(sort: Desc)])
@@ -417,7 +511,7 @@ model rider_wallet_transactions {
   created_at DateTime        @default(now()) @db.Timestamptz()
 
   // Relations
-  rider riders @relation(fields: [rider_id], references: [id], onDelete: Cascade)
+  rider riders  @relation(fields: [rider_id], references: [id], onDelete: Cascade)
   order orders? @relation(fields: [order_id], references: [id])
 
   @@index([rider_id, created_at(sort: Desc)])
@@ -437,6 +531,42 @@ model device_tokens {
 
   @@unique([user_id, token])
   @@index([user_id])
+}
+
+// ── push_outbox — the L3 notification queue ─────────────────────────────
+//
+// Mirrors cartman-mobile/supabase/migrations/20260810000200_push_outbox.sql
+// exactly. Six triggers there decide who to notify and insert a row;
+// PushDrainService reads it and posts each to the `push-send` Edge Function.
+//
+// The table is service-role only: RLS is enabled with **no policies** and all
+// privileges are revoked from anon and authenticated. So this model is only
+// ever reachable through this server's own Prisma connection — a
+// request-scoped or anon client reads zero rows and reports success, which is
+// exactly the "failed upward" shape the POD grant had.
+
+model push_outbox {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  // Which trigger produced this, so a misfiring rule can be found by querying
+  // rather than by reading six functions.
+  event      String
+  title      String
+  body       String?
+  data       Json      @default("{}")
+  created_at DateTime  @default(now()) @db.Timestamptz()
+  sent_at    DateTime? @db.Timestamptz()
+  attempts   Int       @default(0)
+  last_error String?
+
+  // Relations
+  profile profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  // Partial in the database (`where sent_at is null`) — Prisma cannot express
+  // that, and declaring it unqualified here would drift the schema. The index
+  // that actually exists is the migration's; this line only keeps `db push`
+  // from proposing to drop it.
+  @@index([created_at])
 }
 
 // ── otp_codes — transactional SMS + email OTP (C-1.2) ───────────────────
@@ -467,9 +597,9 @@ model otp_codes {
 // breaking those policies.
 
 model merchant_users {
-  merchant_id String      @db.Uuid
-  user_id     String      @db.Uuid
-  created_at  DateTime    @default(now()) @db.Timestamptz()
+  merchant_id String   @db.Uuid
+  user_id     String   @db.Uuid
+  created_at  DateTime @default(now()) @db.Timestamptz()
 
   // Relations
   merchant merchants @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
@@ -548,9 +678,9 @@ model order_assignment_events {
   actor_id   String?  @db.Uuid
   created_at DateTime @default(now()) @db.Timestamptz()
 
-  order  orders    @relation(fields: [order_id], references: [id], onDelete: Cascade)
-  rider  profiles? @relation("rider_assignment_events", fields: [rider_id], references: [id])
-  actor  profiles? @relation("actor_assignment_events", fields: [actor_id], references: [id])
+  order orders    @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  rider profiles? @relation("rider_assignment_events", fields: [rider_id], references: [id])
+  actor profiles? @relation("actor_assignment_events", fields: [actor_id], references: [id])
 
   @@index([order_id, created_at])
   @@index([rider_id, created_at(sort: Desc)])

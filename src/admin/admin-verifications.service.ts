@@ -27,7 +27,12 @@ export class AdminVerificationsService {
     return { items, total, limit, offset };
   }
 
-  async approve(id: string) {
+  /**
+   * @param actorId the admin performing the approval, from the request JWT.
+   *   Required, because the alternative is a verification gate with no record
+   *   of who opened it.
+   */
+  async approve(id: string, actorId: string) {
     // One transaction: flip the verification to Approved and, if its user is a
     // rider, mark that rider verified. riders.id === profiles.id === user_id,
     // so updateMany on that id is a safe no-op when the user isn't a rider.
@@ -39,10 +44,31 @@ export class AdminVerificationsService {
         where: { id },
         data: { status: 'Approved' },
       });
-      await tx.riders.updateMany({
+      const { count } = await tx.riders.updateMany({
         where: { id: verification.user_id },
         data: { is_verified: true },
       });
+
+      // The audit trail the SQL path gets for free. `admin_set_rider_verified`
+      // writes this row itself, but it cannot be called from here: it reads
+      // `auth.uid()` to authorise and to stamp `actor_id`, and that is null on
+      // a Prisma connection. So this path has to write it — and until it did,
+      // CartmanPH had 5 verified riders and 0 verification_events.
+      //
+      // Only when a rider row actually moved: `verifications` also carries
+      // merchant business permits, where the updateMany above is a deliberate
+      // no-op, and a 'rider' row there would describe something that never
+      // happened.
+      if (count > 0) {
+        await tx.verification_events.create({
+          data: {
+            subject_kind: 'rider',
+            subject_id: verification.user_id,
+            approved: true,
+            actor_id: actorId,
+          },
+        });
+      }
       return updated;
     });
   }

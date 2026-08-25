@@ -18,6 +18,7 @@ describe('AdminVerificationsService', () => {
   let tx: {
     verifications: { findUnique: jest.Mock; update: jest.Mock };
     riders: { updateMany: jest.Mock };
+    verification_events: { create: jest.Mock };
   };
   let prisma: {
     verifications: {
@@ -33,6 +34,7 @@ describe('AdminVerificationsService', () => {
     tx = {
       verifications: { findUnique: jest.fn(), update: jest.fn() },
       riders: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
+      verification_events: { create: jest.fn().mockResolvedValue({}) },
     };
     prisma = {
       verifications: {
@@ -82,7 +84,7 @@ describe('AdminVerificationsService', () => {
       });
       tx.riders.updateMany.mockResolvedValue({ count: 1 });
 
-      const res = await service.approve('v1');
+      const res = await service.approve('v1', 'admin-1');
 
       expect(tx.verifications.update).toHaveBeenCalledWith({
         where: { id: 'v1' },
@@ -95,12 +97,53 @@ describe('AdminVerificationsService', () => {
       expect(res).toEqual({ id: 'v1', status: 'Approved' });
     });
 
+    it('records who approved whom, in the same transaction', async () => {
+      tx.verifications.findUnique.mockResolvedValue({
+        id: 'v1',
+        user_id: 'u1',
+      });
+      tx.verifications.update.mockResolvedValue({ id: 'v1' });
+      tx.riders.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.approve('v1', 'admin-1');
+
+      // Without this the gate has no audit trail at all: 5 riders were
+      // verified on CartmanPH and verification_events held 0 rows, because
+      // this path writes is_verified directly instead of going through
+      // admin_set_rider_verified (which cannot be called from here — it reads
+      // auth.uid(), which is null on a Prisma connection).
+      expect(tx.verification_events.create).toHaveBeenCalledWith({
+        data: {
+          subject_kind: 'rider',
+          subject_id: 'u1',
+          approved: true,
+          actor_id: 'admin-1',
+        },
+      });
+    });
+
+    it('does not record a rider event when no rider row matched', async () => {
+      tx.verifications.findUnique.mockResolvedValue({
+        id: 'v1',
+        user_id: 'u1',
+      });
+      tx.verifications.update.mockResolvedValue({ id: 'v1' });
+      tx.riders.updateMany.mockResolvedValue({ count: 0 });
+
+      await service.approve('v1', 'admin-1');
+
+      // `verifications` also carries merchant business permits, where the
+      // rider updateMany is a deliberate no-op. Logging 'rider' there would
+      // put a row in the audit trail describing something that never happened.
+      expect(tx.verification_events.create).not.toHaveBeenCalled();
+    });
+
     it('404s when the verification is missing', async () => {
       tx.verifications.findUnique.mockResolvedValue(null);
 
-      await expect(service.approve('missing')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.approve('missing', 'admin-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 

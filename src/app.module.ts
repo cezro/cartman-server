@@ -18,6 +18,7 @@ import { StorageModule } from './storage/storage.module';
 import { GeoModule } from './geo/geo.module';
 import { AdminModule } from './admin/admin.module';
 import { AccountsModule } from './accounts/accounts.module';
+import { PushModule } from './push/push.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { LoggingInterceptor } from './common/logging.interceptor';
@@ -26,8 +27,9 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    // Drives the hourly account-deletion sweep (L5). Nothing else is scheduled
-    // yet; the sweep is the one job that has to run without a client asking.
+    // Drives the hourly account-deletion sweep (L5) and the 10-second push
+    // outbox drain (L3) — the two jobs that have to run without a client
+    // asking.
     ScheduleModule.forRoot(),
     // Global defense-in-depth rate limit: 200 req/min per user (or per IP on
     // @Public routes) — see UserOrIpThrottlerGuard for why the key is the
@@ -51,6 +53,7 @@ import { AllExceptionsFilter } from './common/all-exceptions.filter';
     GeoModule,
     AdminModule,
     AccountsModule,
+    PushModule,
   ],
   controllers: [AppController],
   providers: [
