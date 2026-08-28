@@ -34,6 +34,11 @@ export class RidersService {
   private async ensureVerificationRequest(userId: string) {
     const open = await this.prisma.verifications.findFirst({
       where: { user_id: userId, status: 'Pending' },
+      // `verifications` has no unique constraint on (user_id, status), so two
+      // near-simultaneous submits can open two rows. Ordering makes the pick
+      // deterministic, so every later call resolves to the same one rather
+      // than alternating between them.
+      orderBy: { submitted_at: 'desc' },
     });
     if (open) return open;
 
@@ -72,14 +77,26 @@ export class RidersService {
   }
 
   async createRider(userId: string, data: any) {
-    const rider = await this.prisma.riders.create({
-      data: {
-        id: userId,
-        ...data,
-      },
+    // One transaction, matching onboardRider: a rider row that exists with no
+    // review is the stranded state this whole change removes, and a failure
+    // between the two writes must not be able to recreate it.
+    return this.prisma.$transaction(async (tx) => {
+      const rider = await tx.riders.create({
+        data: {
+          id: userId,
+          ...data,
+        },
+      });
+      await tx.verifications.create({
+        data: {
+          user_id: userId,
+          document_type: RIDER_VERIFICATION_TYPE,
+          document_url: '',
+          status: 'Pending',
+        },
+      });
+      return rider;
     });
-    await this.ensureVerificationRequest(userId);
-    return rider;
   }
 
   /**

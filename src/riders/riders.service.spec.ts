@@ -232,10 +232,22 @@ describe('RidersService — verification intake', () => {
     expect(prisma.verifications.create).not.toHaveBeenCalled();
   });
 
-  it('opens a review for the ops-created rider route too', async () => {
+  it('opens a review for the ops-created rider route too, in one transaction', async () => {
+    // Same guarantee as onboardRider: a rider row that exists with no review is
+    // the stranded state this removes, so a failure between the two writes must
+    // not be able to recreate it.
     await service.createRider('u-1', { vehicle: 'Tricycle' });
 
-    expect(prisma.verifications.create).toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(tx.riders.create).toHaveBeenCalled();
+    expect(tx.verifications.create).toHaveBeenCalledWith({
+      data: {
+        user_id: 'u-1',
+        document_type: 'Rider ID',
+        document_url: '',
+        status: 'Pending',
+      },
+    });
   });
 
   it('un-strands a rider provisioned before intake existed', async () => {
