@@ -484,11 +484,55 @@ describe('OrdersService', () => {
     });
   });
 
+  // 20260803000200 gated the RLS feed policy and `accept_order` on
+  // riders.is_verified, and left this path alone — but this is the path the
+  // rider app claims through, and it reads via Prisma on a privileged
+  // connection where RLS does not apply. So the gate never covered the live
+  // path, and the only thing stopping an unapproved rider taking a COD order
+  // was a screen in the Flutter app.
+  describe('claim refuses an unapproved rider', () => {
+    it('rejects before the duty check, and before any order is touched', async () => {
+      prisma.riders.findUnique.mockResolvedValue({
+        id: 'rider-1',
+        is_active: true,
+        is_verified: false,
+      });
+
+      await expect(
+        service.claimOrder('order-1', 'rider-1'),
+      ).rejects.toThrow(/still being reviewed/);
+      expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unapproved rider who is also off duty', async () => {
+      // Approval is the more fundamental refusal: they are not "not working
+      // right now", they are not yet allowed to work at all.
+      prisma.riders.findUnique.mockResolvedValue({
+        id: 'rider-1',
+        is_active: false,
+        is_verified: false,
+      });
+
+      await expect(
+        service.claimOrder('order-1', 'rider-1'),
+      ).rejects.toThrow(/still being reviewed/);
+    });
+
+    it('rejects a rider row that does not exist at all', async () => {
+      prisma.riders.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.claimOrder('order-1', 'rider-1'),
+      ).rejects.toThrow(/still being reviewed/);
+    });
+  });
+
   describe('a fresh errand order is claimable', () => {
     it('claimOrder succeeds when the order is ready_for_pickup and unassigned', async () => {
       prisma.riders.findUnique.mockResolvedValue({
         id: 'rider-1',
         is_active: true,
+        is_verified: true,
       });
       ledgerService.getNetCash.mockResolvedValue(0n);
       prisma.orders.updateMany.mockResolvedValue({ count: 1 });
@@ -523,6 +567,7 @@ describe('OrdersService', () => {
       prisma.riders.findUnique.mockResolvedValue({
         id: 'rider-1',
         is_active: true,
+        is_verified: true,
       });
       ledgerService.getNetCash.mockResolvedValue(0n);
       prisma.orders.updateMany.mockResolvedValue({ count: 1 });

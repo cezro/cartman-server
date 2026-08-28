@@ -13,9 +13,11 @@ describe('RidersService.onboardRider', () => {
   let tx: {
     riders: { create: jest.Mock };
     profiles: { update: jest.Mock };
+    verifications: { create: jest.Mock };
   };
   let prisma: {
     riders: { findUnique: jest.Mock };
+    verifications: { findFirst: jest.Mock; create: jest.Mock };
     $transaction: jest.Mock;
   };
 
@@ -23,9 +25,11 @@ describe('RidersService.onboardRider', () => {
     tx = {
       riders: { create: jest.fn() },
       profiles: { update: jest.fn() },
+      verifications: { create: jest.fn() },
     };
     prisma = {
       riders: { findUnique: jest.fn() },
+      verifications: { findFirst: jest.fn(), create: jest.fn() },
       $transaction: jest.fn(
         (cb: (t: typeof tx) => unknown) => cb(tx) as unknown,
       ),
@@ -159,5 +163,146 @@ describe('RidersService.getDeliveryHistory', () => {
     expect(result[0].total).toBe(14900);
     expect(typeof result[0].delivery_payout).toBe('number');
     expect(result[0].order_items[0].unit_price).toBe(15000);
+  });
+});
+
+// ── Intake ────────────────────────────────────────────────────────────────
+//
+// The queue an admin approves from was never populated by anything: no code
+// path in any of the three repos inserted into `verifications`. A rider signed
+// up, was told "we're reviewing your account", and joined a queue that stayed
+// empty — production reached five verified riders entirely by hand.
+describe('RidersService — verification intake', () => {
+  let service: RidersService;
+  let tx: {
+    riders: { create: jest.Mock };
+    profiles: { update: jest.Mock };
+    verifications: { create: jest.Mock };
+  };
+  let prisma: {
+    riders: { findUnique: jest.Mock; create: jest.Mock };
+    verifications: {
+      findFirst: jest.Mock;
+      create: jest.Mock;
+      update: jest.Mock;
+    };
+    $transaction: jest.Mock;
+  };
+
+  beforeEach(() => {
+    tx = {
+      riders: { create: jest.fn().mockResolvedValue({ id: 'u-1' }) },
+      profiles: { update: jest.fn() },
+      verifications: { create: jest.fn() },
+    };
+    prisma = {
+      riders: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'u-1' }),
+      },
+      verifications: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'v-1' }),
+        update: jest.fn().mockResolvedValue({ id: 'v-1' }),
+      },
+      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    service = new RidersService(prisma as unknown as PrismaService);
+  });
+
+  it('opens a review when a rider self-onboards', async () => {
+    await service.onboardRider('u-1', { vehicle: 'Motorcycle' });
+
+    expect(tx.verifications.create).toHaveBeenCalledWith({
+      data: {
+        user_id: 'u-1',
+        document_type: 'Rider ID',
+        document_url: '',
+        status: 'Pending',
+      },
+    });
+  });
+
+  it('opens the review inside the promotion transaction', async () => {
+    // A rider who exists but is in no queue is precisely the stranded state
+    // this fixes; a half-applied onboarding must not be able to produce one.
+    await service.onboardRider('u-1', {});
+
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(prisma.verifications.create).not.toHaveBeenCalled();
+  });
+
+  it('opens a review for the ops-created rider route too', async () => {
+    await service.createRider('u-1', { vehicle: 'Tricycle' });
+
+    expect(prisma.verifications.create).toHaveBeenCalled();
+  });
+
+  it('un-strands a rider provisioned before intake existed', async () => {
+    // They are stuck at is_verified = false with nothing for an admin to act
+    // on, and re-running onboarding is the one thing they would try.
+    prisma.riders.findUnique.mockResolvedValue({
+      id: 'u-1',
+      is_verified: false,
+    });
+
+    await service.onboardRider('u-1', {});
+
+    expect(prisma.verifications.create).toHaveBeenCalled();
+  });
+
+  it('does not re-open a review for an already-approved rider', async () => {
+    prisma.riders.findUnique.mockResolvedValue({
+      id: 'u-1',
+      is_verified: true,
+    });
+
+    await service.onboardRider('u-1', {});
+
+    expect(prisma.verifications.create).not.toHaveBeenCalled();
+  });
+
+  it('does not stack a second review on top of an open one', async () => {
+    prisma.verifications.findFirst.mockResolvedValue({ id: 'v-existing' });
+
+    await service.submitVerificationDocument('u-1', {
+      document_url: 'https://example.test/id.jpg',
+    });
+
+    expect(prisma.verifications.create).not.toHaveBeenCalled();
+    expect(prisma.verifications.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'v-existing' } }),
+    );
+  });
+
+  it('attaches the document and restamps submitted_at', async () => {
+    prisma.verifications.findFirst.mockResolvedValue({ id: 'v-1' });
+
+    await service.submitVerificationDocument('u-1', {
+      document_url: 'https://example.test/id.jpg',
+      document_type: 'Driver License',
+    });
+
+    const arg = (
+      prisma.verifications.update.mock.calls as unknown[][]
+    )[0][0] as {
+      data: { document_url: string; document_type: string; submitted_at: Date };
+    };
+    expect(arg.data.document_url).toBe('https://example.test/id.jpg');
+    expect(arg.data.document_type).toBe('Driver License');
+    // So the queue sorts on when the rider submitted, not on when the empty
+    // placeholder was opened.
+    expect(arg.data.submitted_at).toBeInstanceOf(Date);
+  });
+
+  it('opens a review for a rider who has none, so they can still submit', async () => {
+    prisma.verifications.findFirst.mockResolvedValue(null);
+
+    await service.submitVerificationDocument('u-1', {
+      document_url: 'https://example.test/id.jpg',
+    });
+
+    expect(prisma.verifications.create).toHaveBeenCalled();
+    expect(prisma.verifications.update).toHaveBeenCalled();
   });
 });
