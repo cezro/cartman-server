@@ -128,7 +128,8 @@ function makeFakePrisma() {
         ),
     },
     riders: {
-      findUnique: () => Promise.resolve({ id: 'rider-1', is_active: true }),
+      findUnique: () =>
+        Promise.resolve({ id: 'rider-1', is_active: true, is_verified: true }),
     },
     rider_locations: { findFirst: () => Promise.resolve(null) },
     rider_wallet_transactions: {

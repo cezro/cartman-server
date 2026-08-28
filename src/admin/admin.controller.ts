@@ -164,8 +164,13 @@ export class AdminController {
   }
 
   @Post('verifications/:id/reject')
-  rejectVerification(@Param('id') id: string) {
-    return this.verificationsService.reject(id);
+  rejectVerification(
+    @Param('id') id: string,
+    // Same reason as approve: a rejection is a decision someone may contest,
+    // and it now also revokes an existing approval.
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.verificationsService.reject(id, user.id);
   }
 
   // ══ Admin Dashboard V2 — support tickets ════════════════════════════════

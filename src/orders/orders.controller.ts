@@ -158,7 +158,26 @@ export class OrdersController {
     const rider = await this.prisma.riders.findUnique({
       where: { id: user.id },
     });
-    if (!rider?.is_active) {
+
+    // Approval is checked before duty, because it is the more fundamental
+    // refusal: an unapproved rider is not "not working right now", they are
+    // not yet allowed to work at all.
+    //
+    // 20260803000200 gated the RLS feed policy and the `accept_order` RPC on
+    // this column and left this route alone — but this route is the one the
+    // rider app actually calls, and it reads `orders` through Prisma on a
+    // privileged connection, where RLS does not apply. So the gate that
+    // migration installed never covered the live path. Until this check
+    // existed, the only thing stopping an unapproved rider from taking a COD
+    // order was a screen in the Flutter app, which is a client enforcing a
+    // server rule. See the migration's own header for what that risks.
+    if (!rider?.is_verified) {
+      throw new ForbiddenException(
+        'Your account is still being reviewed — you cannot take orders yet',
+      );
+    }
+
+    if (!rider.is_active) {
       throw new ForbiddenException('Go on duty to see orders');
     }
 

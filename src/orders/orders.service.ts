@@ -647,7 +647,20 @@ export class OrdersService {
     const rider = await this.prisma.riders.findUnique({
       where: { id: riderId },
     });
-    if (!rider?.is_active) {
+
+    // The claim half of the same gate as GET /orders/feed. Both are needed:
+    // the feed is what an honest client reads, and this is what actually moves
+    // the money. `accept_order` (the DB twin) has checked `is_verified` since
+    // 20260803000200; this path did not, and this is the path the rider app
+    // uses. An unapproved rider reaching here is holding a customer's COD cash
+    // with nobody having checked who they are.
+    if (!rider?.is_verified) {
+      throw new ForbiddenException(
+        'Your account is still being reviewed — you cannot take orders yet',
+      );
+    }
+
+    if (!rider.is_active) {
       throw new BadRequestException('Go on-duty before claiming orders');
     }
 

@@ -197,6 +197,11 @@ export class AdminVerificationsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsIn(VERIFICATION_STATUSES)
   status?: (typeof VERIFICATION_STATUSES)[number];
+
+  /** One subject's review history — the rider-detail page's query. */
+  @IsOptional()
+  @IsUUID()
+  user_id?: string;
 }
 
 /** Query for GET /admin/tickets. */
