@@ -228,6 +228,13 @@ model merchants {
   // `is_open` stays the separate "trading at all" switch: a closed store is
   // not busy, it is closed. Mirrors 20260818000100_merchant_busy_until.sql.
   busy_until      DateTime? @db.Timestamptz()
+  // The store application an admin vets: a human-readable street address and a
+  // number to ring. Distinct from lat/lng above, which dispatch reads — this is
+  // what a person checks against a permit. Both default to '' rather than being
+  // nullable, so "not given" and "not loaded" cannot be confused.
+  // Mirrors supabase/migrations/20260830000100_merchant_application.sql.
+  address         String    @default("")
+  contact_phone   String    @default("")
   created_at      DateTime  @default(now()) @db.Timestamptz()
 
   // Relations
