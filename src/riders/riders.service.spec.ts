@@ -209,6 +209,7 @@ describe('RidersService — provisioning writes no verifications row', () => {
 
   it('opens no review on the ops-created rider route either', async () => {
     await service.createRider('r1', { vehicle: 'motorcycle' });
+    expect(prisma.verifications.create).not.toHaveBeenCalled();
     expect(tx.verifications.create).not.toHaveBeenCalled();
   });
 
