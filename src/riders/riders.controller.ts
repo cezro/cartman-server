@@ -16,7 +16,6 @@ import { CreateRiderDto } from './dto/create-rider.dto';
 import { OnboardRiderDto } from './dto/onboard-rider.dto';
 import { ToggleDutyDto } from './dto/toggle-duty.dto';
 import { LogTelemetryDto } from './dto/log-telemetry.dto';
-import { SubmitVerificationDto } from './dto/submit-verification.dto';
 
 @Controller('riders')
 @UseGuards(JwtAuthGuard)
@@ -51,23 +50,6 @@ export class RidersController {
     @Body() data: OnboardRiderDto,
   ) {
     return this.ridersService.onboardRider(user.id, data);
-  }
-
-  /**
-   * Attach a document to the caller's own verification review.
-   *
-   * `@Roles('rider')` is correct here where it would have been wrong on
-   * /onboard: by this point the caller is already a rider, they are just not
-   * an approved one. The review is looked up from the JWT, never from the
-   * body, so a rider can only ever submit against their own.
-   */
-  @Post('me/verification')
-  @Roles('rider')
-  submitVerification(
-    @CurrentUser() user: AuthenticatedUser,
-    @Body() body: SubmitVerificationDto,
-  ) {
-    return this.ridersService.submitVerificationDocument(user.id, body);
   }
 
   @Patch(':id/activate')

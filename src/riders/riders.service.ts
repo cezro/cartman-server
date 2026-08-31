@@ -2,100 +2,16 @@ import { ConflictException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { serializeOrder } from '../orders/serialize-order';
 
-/**
- * What a rider's onboarding review is filed as. `verifications` also carries
- * merchant business permits, so the type is what tells the two apart in the
- * admin queue.
- */
-export const RIDER_VERIFICATION_TYPE = 'Rider ID';
-
 @Injectable()
 export class RidersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /**
-   * Put a new rider in front of an admin.
-   *
-   * Riders are created with `is_verified = false` and cannot work until an
-   * admin approves them, but **nothing ever created the row that approval acts
-   * on** — no code path in any of the three repos inserted into
-   * `verifications`. So a rider signed up, was told "we're reviewing your
-   * account", and joined a queue that stayed empty; the five verified riders in
-   * production got there by hand.
-   *
-   * `document_url` is empty at this point and that is the honest state: the
-   * rider has submitted nothing yet. The row exists so somebody is *visible* as
-   * waiting — `POST /riders/me/verification` is what attaches the document.
-   *
-   * Idempotent on the open row rather than on the rider, so a rejected rider
-   * who re-applies opens a fresh review instead of silently reusing the old
-   * decision.
-   */
-  private async ensureVerificationRequest(userId: string) {
-    const open = await this.prisma.verifications.findFirst({
-      where: { user_id: userId, status: 'Pending' },
-      // `verifications` has no unique constraint on (user_id, status), so two
-      // near-simultaneous submits can open two rows. Ordering makes the pick
-      // deterministic, so every later call resolves to the same one rather
-      // than alternating between them.
-      orderBy: { submitted_at: 'desc' },
-    });
-    if (open) return open;
-
-    return this.prisma.verifications.create({
-      data: {
-        user_id: userId,
-        document_type: RIDER_VERIFICATION_TYPE,
-        document_url: '',
-        status: 'Pending',
-      },
-    });
-  }
-
-  /**
-   * Attach (or replace) the document on the rider's open review.
-   *
-   * Creates the review if there is none, so a rider provisioned before this
-   * existed — or by the seed, or by hand — can still submit without an admin
-   * having to open one for them.
-   */
-  async submitVerificationDocument(
-    userId: string,
-    data: { document_url: string; document_type?: string },
-  ) {
-    const open = await this.ensureVerificationRequest(userId);
-    return this.prisma.verifications.update({
-      where: { id: open.id },
-      data: {
-        document_url: data.document_url,
-        document_type: data.document_type ?? RIDER_VERIFICATION_TYPE,
-        // Restamped so the queue sorts on when the rider actually submitted,
-        // not on when the empty placeholder was opened.
-        submitted_at: new Date(),
-      },
-    });
-  }
-
   async createRider(userId: string, data: any) {
-    // One transaction, matching onboardRider: a rider row that exists with no
-    // review is the stranded state this whole change removes, and a failure
-    // between the two writes must not be able to recreate it.
-    return this.prisma.$transaction(async (tx) => {
-      const rider = await tx.riders.create({
-        data: {
-          id: userId,
-          ...data,
-        },
-      });
-      await tx.verifications.create({
-        data: {
-          user_id: userId,
-          document_type: RIDER_VERIFICATION_TYPE,
-          document_url: '',
-          status: 'Pending',
-        },
-      });
-      return rider;
+    return this.prisma.riders.create({
+      data: {
+        id: userId,
+        ...data,
+      },
     });
   }
 
@@ -112,8 +28,11 @@ export class RidersService {
    *
    * `is_verified` and `is_active` are left at their schema defaults (both
    * false) — self-service onboarding provisions an *unverified, off-duty*
-   * rider, so the admin COD/permit approval gate
-   * (POST /admin/verifications/:id/approve) still applies.
+   * rider. The rider becomes reviewable by uploading a document
+   * (`rider_documents`); an admin then decides via
+   * `admin_set_rider_verified`. No placeholder review row is opened, because
+   * a rider who has uploaded nothing is waiting on themselves, not on an
+   * admin.
    */
   async onboardRider(
     userId: string,
@@ -128,11 +47,6 @@ export class RidersService {
       where: { id: userId },
     });
     if (existing) {
-      // Self-healing on the idempotent path too: a rider provisioned before
-      // this enqueued anything is stuck at `is_verified = false` with no row
-      // for an admin to act on, and re-running onboarding is the one thing
-      // they would naturally try. Cheap, and it un-strands them.
-      if (!existing.is_verified) await this.ensureVerificationRequest(userId);
       return existing;
     }
 
@@ -153,17 +67,6 @@ export class RidersService {
             // riders by phone — but only stamp it when supplied, so a re-run
             // with an empty body can't null out a good number.
             ...(data.phone ? { phone: data.phone } : {}),
-          },
-        });
-        // In the same transaction as the promotion: a rider who exists but is
-        // in no queue is exactly the stranded state this fixes, and it must
-        // not be reachable by a half-applied onboarding.
-        await tx.verifications.create({
-          data: {
-            user_id: userId,
-            document_type: RIDER_VERIFICATION_TYPE,
-            document_url: '',
-            status: 'Pending',
           },
         });
         return rider;
