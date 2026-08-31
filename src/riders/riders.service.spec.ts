@@ -195,9 +195,9 @@ describe('RidersService — provisioning writes no verifications row', () => {
       riders: { findUnique: jest.fn(), create: jest.fn() },
       profiles: { update: jest.fn() },
       verifications: { create: jest.fn(), findFirst: jest.fn() },
-      $transaction: jest.fn().mockImplementation((fn: any) => fn(tx)),
+      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
     };
-    service = new RidersService(prisma as any);
+    service = new RidersService(prisma as unknown as PrismaService);
   });
 
   it('opens no review when a rider self-onboards', async () => {
@@ -225,7 +225,9 @@ describe('RidersService — provisioning writes no verifications row', () => {
   it('still leaves is_verified alone, so admin approval is required', async () => {
     prisma.riders.findUnique.mockResolvedValue(null);
     await service.onboardRider('r1', { vehicle: 'motorcycle' });
-    const created = tx.riders.create.mock.calls[0][0];
+    const created = tx.riders.create.mock.calls[0][0] as {
+      data: { is_verified?: boolean };
+    };
     expect(created.data.is_verified).toBeUndefined();
   });
 });
