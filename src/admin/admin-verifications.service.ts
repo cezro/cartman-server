@@ -77,96 +77,42 @@ export class AdminVerificationsService {
   }
 
   /**
-   * @param actorId the admin performing the approval, from the request JWT.
-   *   Required, because the alternative is a verification gate with no record
-   *   of who opened it.
+   * Approve a verification row.
+   *
+   * Riders are NOT decided here. `admin_set_rider_verified` owns that: it
+   * stamps `riders.is_verified`, the `rider_documents` row the rider actually
+   * uploaded, and `verification_events` — from `auth.uid()`, in one
+   * transaction. This service cannot call it (Prisma connections have no
+   * `auth.uid()`), and a second writer to `is_verified` is exactly the
+   * split-brain that let CartmanPH reach 5 verified riders with 0
+   * verification_events. See
+   * cartmanph-docs/docs/proposals/rider-verification-source-of-truth.md.
+   *
+   * @param actorId kept in the signature for the merchant permit flow, which
+   *   still has no RPC of its own.
    */
   async approve(id: string, actorId: string) {
-    // One transaction: flip the verification to Approved and, if its user is a
-    // rider, mark that rider verified. riders.id === profiles.id === user_id,
-    // so updateMany on that id is a safe no-op when the user isn't a rider.
+    void actorId;
     return this.prisma.$transaction(async (tx) => {
       const verification = await tx.verifications.findUnique({ where: { id } });
       if (!verification) throw new NotFoundException('Verification not found');
-
-      const updated = await tx.verifications.update({
+      return tx.verifications.update({
         where: { id },
         data: { status: 'Approved' },
       });
-      const { count } = await tx.riders.updateMany({
-        where: { id: verification.user_id },
-        data: { is_verified: true },
-      });
-
-      // The audit trail the SQL path gets for free. `admin_set_rider_verified`
-      // writes this row itself, but it cannot be called from here: it reads
-      // `auth.uid()` to authorise and to stamp `actor_id`, and that is null on
-      // a Prisma connection. So this path has to write it — and until it did,
-      // CartmanPH had 5 verified riders and 0 verification_events.
-      //
-      // Only when a rider row actually moved: `verifications` also carries
-      // merchant business permits, where the updateMany above is a deliberate
-      // no-op, and a 'rider' row there would describe something that never
-      // happened.
-      if (count > 0) {
-        await tx.verification_events.create({
-          data: {
-            subject_kind: 'rider',
-            subject_id: verification.user_id,
-            approved: true,
-            actor_id: actorId,
-          },
-        });
-      }
-      return updated;
     });
   }
 
-  /**
-   * @param actorId the admin performing the rejection. Required for the same
-   *   reason as on approve — and arguably more so, since a rejection is the
-   *   decision someone is likely to contest.
-   */
+  /** Reject a verification row. Riders are not decided here — see approve(). */
   async reject(id: string, actorId: string) {
+    void actorId;
     return this.prisma.$transaction(async (tx) => {
       const verification = await tx.verifications.findUnique({ where: { id } });
       if (!verification) throw new NotFoundException('Verification not found');
-
-      const updated = await tx.verifications.update({
+      return tx.verifications.update({
         where: { id },
         data: { status: 'Rejected' },
       });
-
-      // Rejection revokes. Without this, rejecting a rider who had been
-      // approved on an earlier submission left `is_verified` true — the
-      // decision was recorded and the access it controls was not, so the
-      // rider kept taking COD orders on a document an admin had just refused.
-      const { count } = await tx.riders.updateMany({
-        where: { id: verification.user_id },
-        data: { is_verified: false },
-      });
-
-      // Mirrors approve: the audit row is written here because
-      // `admin_set_rider_verified` cannot be reached from a Prisma connection
-      // (it reads `auth.uid()`, which is null here). Approve has done this
-      // since the 5-verified-riders/0-events discrepancy; reject never did, so
-      // the trail recorded who was let in and not who was turned away.
-      if (count > 0) {
-        await tx.verification_events.create({
-          data: {
-            subject_kind: 'rider',
-            subject_id: verification.user_id,
-            approved: false,
-            actor_id: actorId,
-          },
-        });
-      }
-
-      // Telling the rider is still outstanding: `Rejected` is what the app
-      // reads to prompt a re-upload, and `POST /riders/me/verification` is now
-      // the route that re-opens the review — but nothing pushes the news, so
-      // the rider only learns by reopening the app.
-      return updated;
     });
   }
 }
