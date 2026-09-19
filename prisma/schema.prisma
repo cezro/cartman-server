@@ -136,6 +136,14 @@ enum incident_status {
   closed
 }
 
+// What a voucher is worth. `free_delivery` deliberately carries no figure —
+// it is worth whatever that order's delivery fee happens to be, and a number
+// written here would go stale the moment fees change.
+enum voucher_kind {
+  amount_off
+  free_delivery
+}
+
 // ── profiles — identity, extends auth.users ─────────────────────────────
 
 model profiles {
@@ -181,6 +189,8 @@ model profiles {
   verification_events_acted verification_events[]     @relation("actor_verifications")
   push_outbox               push_outbox[]
   order_messages_sent       order_messages[]
+  favorites                 favorites[]
+  voucher_redemptions       voucher_redemptions[]
 }
 
 // ── addresses — saved Home / Work / Current (C-6.2) ─────────────────────
@@ -235,13 +245,29 @@ model merchants {
   // Mirrors supabase/migrations/20260830000100_merchant_application.sql.
   address         String    @default("")
   contact_phone   String    @default("")
+  // How many ratings the average above is made of. Platform-owned: recomputed
+  // by `rate_order`, deliberately outside the merchant column grant, because a
+  // store that can write its own sample size can write its own rating.
+  // 4.7 from 312 orders and 4.7 from 2 are different facts, which is the whole
+  // reason the customer app shows it.
+  // Mirrors supabase/migrations/20260915000200_merchant_reviews.sql.
+  rating_count    Int       @default(0)
+  // Extra labels beside the primary `category` above. A carinderia is also
+  // "Rice Meal" and "Silog"; one column could only ever say one of them.
+  // The DB does NOT force the primary to the front of this array — the panel
+  // does that on save, so read it as an unordered set here.
+  // Mirrors supabase/migrations/20260917000300_merchant_categories.sql.
+  categories      String[]  @default([])
   created_at      DateTime  @default(now()) @db.Timestamptz()
 
   // Relations
-  menu_items     menu_items[]
-  orders         orders[]
-  merchant_users merchant_users[]
-  order_ratings  order_ratings[]
+  menu_items         menu_items[]
+  orders             orders[]
+  merchant_users     merchant_users[]
+  order_ratings      order_ratings[]
+  favorites          favorites[]
+  vouchers           vouchers[]
+  merchant_documents merchant_documents[]
 }
 
 model menu_items {
@@ -366,6 +392,7 @@ model orders {
   assignment_events   order_assignment_events[]
   incident_reports    incident_reports[]          @relation("order_incidents")
   order_messages      order_messages[]
+  voucher_redemption  voucher_redemptions?
 
   @@index([customer_id])
   @@index([assigned_rider_id])
@@ -488,6 +515,7 @@ model riders {
   profile             profiles                    @relation(fields: [id], references: [id], onDelete: Cascade)
   rider_locations     rider_locations[]
   wallet_transactions rider_wallet_transactions[]
+  rider_documents     rider_documents[]
 }
 
 // ── rider_locations — background telemetry (R-2.1) ──────────────────────
@@ -565,6 +593,11 @@ model push_outbox {
   sent_at    DateTime? @db.Timestamptz()
   attempts   Int       @default(0)
   last_error String?
+  // Stamped when a drainer takes the row, so two drainers cannot both send the
+  // same notification. `push_outbox_claim` clears it again after `p_stale_after`
+  // so a drainer that dies mid-batch does not strand its rows forever.
+  // Mirrors supabase/migrations/20260917000100_push_outbox_claim.sql.
+  claimed_at DateTime? @db.Timestamptz()
 
   // Relations
   profile profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
@@ -728,4 +761,159 @@ model verification_events {
   actor profiles @relation("actor_verifications", fields: [actor_id], references: [id])
 
   @@index([subject_kind, subject_id, created_at(sort: Desc)])
+}
+
+// ── vouchers + voucher_redemptions — discounts that come off a bill ──────
+//
+// Mirrors cartman-mobile/supabase/migrations/20260915000300_vouchers.sql.
+//
+// **This server does not price vouchers, and must not start here.** The money
+// is decided by two SECURITY DEFINER functions in that migration —
+// `voucher_eval` prices the preview, `redeem_voucher` recomputes from the
+// placed order row — so the client sends a code and an order id, never an
+// amount. `_merchantOrderBody` still sends `{merchant_id, items, notes}` and
+// nothing about money; the order is created at full price and the discount
+// lands immediately after. These models exist so the mirror is honest and a
+// `db push` cannot drop the campaign table; reading them is fine, deciding a
+// discount from them is not. See docs/server-handoff.md §10 for the
+// voucher-aware order route, which is still unwritten.
+
+model vouchers {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // Stored uppercase (CHECK `code = upper(code)`), so "salamat50" and
+  // "SALAMAT50" are one voucher rather than a support ticket.
+  code           String       @unique
+  title          String
+  description    String       @default("")
+  kind           voucher_kind @default(amount_off)
+  // Centavos off, for `amount_off`. Ignored for `free_delivery`.
+  amount_off     BigInt       @default(0)
+  // Checked against the **subtotal**, not the total: a minimum spend the
+  // delivery fee helps clear is not a minimum spend.
+  min_spend      BigInt       @default(0)
+  // Null = any store.
+  merchant_id    String?      @db.Uuid
+  // Null = every service. Set, and only these types qualify — a food voucher
+  // should not quietly pay for a tricycle ride. The column is nullable in the
+  // database and Prisma cannot mark a scalar list optional, so the client
+  // reads a null as `[]`; treat empty as "every service", never as "none".
+  order_types    order_type[]
+  starts_at      DateTime     @default(now()) @db.Timestamptz()
+  expires_at     DateTime     @db.Timestamptz()
+  is_active      Boolean      @default(true)
+  // Null = unlimited. The campaign budget, in redemptions.
+  total_limit    Int?
+  per_user_limit Int          @default(1)
+  created_at     DateTime     @default(now()) @db.Timestamptz()
+
+  // Relations
+  merchant    merchants?            @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+  redemptions voucher_redemptions[]
+}
+
+// Append-only, like the rider ledger and for the same reason: this is the
+// record of money given away. One voucher per order is the `order_id` UNIQUE,
+// not a check the client is trusted to make.
+
+model voucher_redemptions {
+  id         BigInt   @id @default(autoincrement())
+  voucher_id String   @db.Uuid
+  user_id    String   @db.Uuid
+  order_id   String   @unique @db.Uuid
+  // What it actually took off, in centavos. Snapshotted: the campaign may be
+  // edited or ended tomorrow, and this order still has to say what happened.
+  amount     BigInt
+  created_at DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  voucher vouchers @relation(fields: [voucher_id], references: [id], onDelete: Cascade)
+  profile profiles @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  order   orders   @relation(fields: [order_id], references: [id], onDelete: Cascade)
+
+  @@index([voucher_id])
+  @@index([user_id])
+}
+
+// ── favorites — a customer's saved stores (C-2.5) ────────────────────────
+//
+// Mirrors cartman-mobile/supabase/migrations/20260917000200_favorites.sql.
+// No surrogate key: the pair IS the fact, and the composite primary key also
+// answers "which stores has this user saved" without a second index.
+
+model favorites {
+  user_id     String   @db.Uuid
+  merchant_id String   @db.Uuid
+  created_at  DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  profile  profiles  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  merchant merchants @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+
+  @@id([user_id, merchant_id])
+}
+
+// ── rider_documents / merchant_documents — the evidence behind is_verified ─
+//
+// Mirror cartman-mobile/supabase/migrations/20260827000100_rider_documents.sql
+// and 20260830000100_merchant_application.sql.
+//
+// **This server never reads or writes either table, and that is why they are
+// here.** They were left unmodelled on exactly that reasoning, which had it
+// backwards: an unmodelled table is not one `db push` leaves alone, it is one
+// `db push` DROPS — with the licences and permits in it. `npm run db:drift`
+// had been failing on both since 2026-08-27, and a guard that is always red is
+// a guard nobody reads. That is the shape the 08-20 incident already took once.
+//
+// The decision that IS about code still stands: riders are verified by
+// `admin_set_rider_verified` (which needs `auth.uid()` and so cannot be called
+// over a Prisma connection), never by this service. Modelling the table does
+// not make it a write path — see AdminVerificationsService.approve().
+//
+// `kind` and `status` are text with CHECK constraints rather than enums, so
+// adding a document class later is a constraint edit and not a migration
+// against a hot table. Prisma models them as String for the same reason it
+// must: the database has no enum type to mirror.
+
+model rider_documents {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rider_id      String   @db.Uuid
+  // CHECK: 'license_front' | 'license_back'
+  kind          String
+  // Path inside the **private** `rider-docs` bucket. Not a URL: an admin reads
+  // it through a short-lived signed URL, and a licence must never be public.
+  storage_path  String
+  // CHECK: 'pending' | 'approved' | 'rejected'. RLS pins this on every client
+  // write, or a rider could approve themselves with one UPDATE.
+  status        String   @default("pending")
+  // Reaches the rider verbatim, so it is written to be read by one.
+  reject_reason String?
+  created_at    DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  rider riders @relation(fields: [rider_id], references: [id], onDelete: Cascade)
+
+  // Re-upload replaces. Keeping every attempt would mean an admin reviewing a
+  // stale photo, and a rejected licence sitting on disk indefinitely.
+  @@unique([rider_id, kind])
+  @@index([rider_id])
+}
+
+model merchant_documents {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  merchant_id   String   @db.Uuid
+  // CHECK: 'permit' | 'valid_id' | 'storefront' — what a sari-sari store,
+  // carinderia or grocery can actually produce.
+  kind          String
+  // Path inside the private `merchant-docs` bucket. See rider_documents above.
+  storage_path  String
+  // CHECK: 'pending' | 'approved' | 'rejected'.
+  status        String   @default("pending")
+  reject_reason String?
+  created_at    DateTime @default(now()) @db.Timestamptz()
+
+  // Relations
+  merchant merchants @relation(fields: [merchant_id], references: [id], onDelete: Cascade)
+
+  @@unique([merchant_id, kind])
+  @@index([merchant_id])
 }
