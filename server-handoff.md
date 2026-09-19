@@ -26,7 +26,7 @@ customer 107 · rider 49).
 | **L3 drainer** | `src/push/push-drain.service.ts` | Polls every 10s, posts to `push-send`, stamps `sent_at` / `attempts` / `last_error`. 12 tests |
 | `push-send` client | `src/push/push-send.client.ts` | 7 tests |
 | **H17 — stuck orders** | `src/push/stuck-order.service.ts` | Every 5 min; notifies customer + admins on orders quiet 15 min. **Changes no order state.** 6 tests |
-| **verification_events fix** | `src/admin/admin-verifications.service.ts` | The approval gate now records who approved whom |
+| **verification_events fix** | `src/admin/admin-verifications.service.ts` | Superseded 2026-08-31 — this service no longer writes the audit row, or flips `is_verified`. `admin_set_rider_verified` does both. See below |
 | `push_outbox` model | `prisma/schema.prisma` | Mirrors `20260810000200` exactly |
 
 Ordered by what actually blocks a tester.
@@ -615,6 +615,17 @@ also carries merchant permits, where that update is a deliberate no-op).
 **H16's push was never affected by this** — `push_on_rider_verified` is a table
 trigger (`after update of is_verified on riders`), so a direct Prisma write
 fires it too. Only the audit was missing, not the notification.
+
+> **Superseded 2026-08-31.** The two paragraphs above describe a fix that has
+> since been removed, and are kept because the incident they record is still
+> the reason the current design looks the way it does. `AdminVerificationsService`
+> no longer writes `verification_events` and no longer flips `riders.is_verified`
+> — it only sets the `verifications` row's status, which now carries merchant
+> permits alone. Rider approval moved to `admin_set_rider_verified`, which
+> stamps the flag, the `rider_documents` rows the rider actually uploaded, and
+> the audit row together, from `auth.uid()`. Two writers to one flag is what
+> produced the 5-verified-riders/0-audit-rows discrepancy in the first place;
+> there is now exactly one.
 
 **Three things worth knowing before writing any migration or grant here:**
 

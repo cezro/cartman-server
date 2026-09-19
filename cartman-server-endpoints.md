@@ -66,11 +66,15 @@ next to `backend-schema.md` (the DB contract) on purpose.
   the verified JWT (never the body), so a caller can only promote themselves, and
   this grants exactly what the email/password rider sign-up form already grants
   by self-declaring `role: 'rider'` in its signup metadata. The new rider is
-  created with schema defaults `is_verified=false` + `is_active=false`, so the
-  admin COD/permit approval gate (`POST /admin/verifications/:id/approve`) still
-  applies. Idempotent (a second call returns the existing row rather than 500ing
-  on the PK), and a `phone` already claimed by another profile → **409**
-  (`profiles.phone` is UNIQUE).
+  created with schema defaults `is_verified=false` + `is_active=false`, so an
+  admin still has to approve them before they can work. That approval is **not**
+  this route's sibling: since 2026-08-31 `POST /admin/verifications/:id/approve`
+  only sets the `verifications` row's status and no longer touches
+  `riders.is_verified`. Riders are approved through `admin_set_rider_verified`,
+  the database RPC the dashboard calls after reviewing the licence the rider
+  uploaded to `rider_documents`. Idempotent (a second call returns the existing
+  row rather than 500ing on the PK), and a `phone` already claimed by another
+  profile → **409** (`profiles.phone` is UNIQUE).
 
   Client side: `AuthRepository.onboardRider()`
   (`packages/core/lib/src/data/supabase_auth_repository.dart` →
