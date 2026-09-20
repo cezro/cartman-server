@@ -77,10 +77,29 @@ describe('PushDrainService', () => {
     expect(prisma.push_outbox.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'o-1' },
-        data: { sent_at: expect.any(Date) as Date },
+        data: { sent_at: expect.any(Date) as Date, last_error: null },
       }),
     );
     expect(result).toEqual({ sent: 1, failed: 0 });
+  });
+
+  it('clears last_error when a row that had failed finally sends', async () => {
+    prisma.push_outbox.findMany.mockResolvedValue([
+      row({ attempts: 2, last_error: 'push-send 503' }),
+    ]);
+
+    await service.drain();
+
+    // Stamping `sent_at` while leaving the old error in place makes a
+    // delivered row read as a broken one forever, and nothing clears it later
+    // because a stamped row is never selected again. Anyone auditing the queue
+    // for trouble then finds failures that already resolved themselves.
+    expect(prisma.push_outbox.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'o-1' },
+        data: { sent_at: expect.any(Date) as Date, last_error: null },
+      }),
+    );
   });
 
   it('does NOT stamp sent_at when the send failed', async () => {
