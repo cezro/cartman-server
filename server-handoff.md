@@ -172,7 +172,7 @@ no trace.
 | | |
 |---|---|
 | `db push` | Removed from `render.yaml`. The deploy touches no DDL at all |
-| The mirror | `order_messages` and `push_outbox` both modelled — 21 → 23 models, so the two gaps this section used to list are closed |
+| The mirror | `order_messages` and `push_outbox` both modelled — 21 → 23 models, so the two gaps this section used to list are closed. **Reconciled again 2026-09-20 to 28 models / 9 enums** — see below |
 | The guard | `npm run db:drift` — read-only, diffs `schema.prisma` against a live database, exits non-zero on any difference and names which direction each runs. Run it after every migration applied in cartman-mobile |
 
 **Reconciling the mirror is necessary but not sufficient, which is why the ban
@@ -186,6 +186,47 @@ It compares tables, columns and enums; policies, grants, triggers, functions and
 indexes are outside what Prisma models. A green run means `db push` would not
 drop a table or a column — it is not a statement about who can read what.
 `supabase/migrations/` in cartman-mobile stays the only authority there.
+
+### Reconciled again — 2026-09-20, and the guard had been red for three weeks
+
+`npm run db:drift` is only worth having if somebody reads it, and between
+2026-08-27 and 2026-09-20 it exited non-zero on every run. Eight differences
+had accumulated, **all of them in the direction that costs data** — a table or
+column the live database has and `schema.prisma` does not is one `db push`
+DROPS:
+
+| Missing from the mirror | Landed in | Why it matters |
+|---|---|---|
+| `vouchers`, `voucher_redemptions`, enum `voucher_kind` | `20260915000300` | The campaign table and the append-only record of money given away |
+| `favorites` | `20260917000200` | Every customer's saved stores |
+| `merchants.rating_count` | `20260915000200` | The sample size behind every rating shown in the app |
+| `merchants.categories` | `20260917000300` | Which storefronts a shop appears in |
+| `push_outbox.claimed_at` | `20260917000100` | The only thing stopping two drainers sending the same notification twice |
+| `rider_documents`, `merchant_documents` | `20260827000100`, `20260830000100` | Riders' licences and merchants' permits |
+
+All eight are now modelled: **28 tables, 9 enums, `db:drift` exit 0**, 490
+tests / 45 suites green, `prisma validate` clean.
+
+**The two document tables were left out on purpose, and that reasoning was
+backwards.** The call was "the server never touches `rider_documents`, so it
+does not belong in the mirror" — true about the code, and exactly wrong about
+the mirror. `schema.prisma` is not a list of what this service queries; it is
+the list of what `db push` would spare. A table missing from it is not ignored,
+it is dropped — with the licences and permits in it. Not modelling them is also
+what kept the guard red, and a guard that is always red is a guard nobody
+reads, which is the same failure the 08-20 incident was made of.
+
+Modelling a table is not the same as making it a write path. Riders are still
+verified only by `admin_set_rider_verified`, which needs `auth.uid()` and so
+cannot be called over a Prisma connection — see
+`AdminVerificationsService.approve()`, which deliberately does not touch
+`riders.is_verified`.
+
+**One thing Prisma cannot mirror faithfully here:** `vouchers.order_types` is a
+nullable `order_type[]` in the database, and Prisma has no optional scalar
+list. The client reads a null as `[]`, so read an empty array as "every service
+qualifies" — never as "none do". `voucher_eval` is the authority; this server
+does not price vouchers.
 
 > **One item from the 08-20 write-up is now closed, contrary to what
 > cartman-mobile's copy still said.** That doc carried *"CartmanPH still has the
