@@ -18,7 +18,6 @@ describe('AdminModule V2 (e2e)', () => {
   let app: INestApplication<App>;
   let prismaMock: {
     profiles: { findUnique: jest.Mock };
-    incidents: { findMany: jest.Mock; count: jest.Mock };
     global_config: { findUnique: jest.Mock; create: jest.Mock };
   };
   let supabaseMock: {
@@ -37,10 +36,6 @@ describe('AdminModule V2 (e2e)', () => {
   beforeEach(async () => {
     prismaMock = {
       profiles: { findUnique: jest.fn() },
-      incidents: {
-        findMany: jest.fn().mockResolvedValue([]),
-        count: jest.fn().mockResolvedValue(0),
-      },
       global_config: {
         findUnique: jest.fn().mockResolvedValue({
           id: 1,
@@ -87,14 +82,18 @@ describe('AdminModule V2 (e2e)', () => {
     expect(res.status).toBe(401);
   });
 
-  it('GET /admin/incidents with a customer-role token returns 403', async () => {
+  // Was written against /admin/incidents. That route is gone, but the
+  // assertion it carried is the only one in this file proving a non-admin
+  // bounces off Admin Dashboard V2 — so it moves to a V2 route that survives
+  // rather than leaving with the code it happened to point at.
+  it('a V2 route with a customer-role token returns 403', async () => {
     prismaMock.profiles.findUnique.mockResolvedValue({
       id: 'user-1',
       role: 'customer',
     });
 
     const res = await request(app.getHttpServer())
-      .get('/admin/incidents')
+      .get('/admin/config')
       .set('Authorization', `Bearer ${signBearerFor('user-1')}`);
 
     expect(res.status).toBe(403);
@@ -115,34 +114,6 @@ describe('AdminModule V2 (e2e)', () => {
     expect(body.id).toBe(1);
     expect(body.base_rate).toBe(39);
     expect(typeof body.base_rate).toBe('number');
-  });
-
-  it('GET /admin/incidents with an admin token returns the envelope', async () => {
-    prismaMock.profiles.findUnique.mockResolvedValue({
-      id: 'admin-1',
-      role: 'admin',
-    });
-
-    const res = await request(app.getHttpServer())
-      .get('/admin/incidents')
-      .set('Authorization', `Bearer ${signBearerFor('admin-1')}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ items: [], total: 0, limit: 20, offset: 0 });
-  });
-
-  it('POST /admin/incidents missing a required field returns 400', async () => {
-    prismaMock.profiles.findUnique.mockResolvedValue({
-      id: 'admin-1',
-      role: 'admin',
-    });
-
-    const res = await request(app.getHttpServer())
-      .post('/admin/incidents')
-      .set('Authorization', `Bearer ${signBearerFor('admin-1')}`)
-      .send({ type: 'payment' }); // severity missing
-
-    expect(res.status).toBe(400);
   });
 
   it('POST /admin/users/:id/reset-2fa returns the recovery action_link', async () => {

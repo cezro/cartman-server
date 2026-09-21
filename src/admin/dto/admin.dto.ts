@@ -6,7 +6,6 @@ import {
   IsNotEmpty,
   IsNumber,
   IsOptional,
-  IsString,
   IsUUID,
   ValidateNested,
 } from 'class-validator';
@@ -14,7 +13,6 @@ import { order_status, order_type, wallet_txn_type } from '@prisma/client';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 
 // ── Admin Dashboard V2 status vocabularies (mirror the spec's enums) ─────
-export const INCIDENT_STATUSES = ['Open', 'Investigating', 'Resolved'] as const;
 export const VERIFICATION_STATUSES = [
   'Pending',
   'Approved',
@@ -104,31 +102,6 @@ export class AdminLedgerQueryDto extends PaginationQueryDto {
 }
 
 // ══ Admin Dashboard V2 ════════════════════════════════════════════════════
-
-/** Body for POST /admin/incidents. */
-export class CreateIncidentDto {
-  @IsNotEmpty()
-  @IsString()
-  type!: string;
-
-  @IsNotEmpty()
-  @IsString()
-  severity!: string;
-
-  @IsOptional()
-  @IsString()
-  relatedOrder?: string;
-
-  @IsOptional()
-  @IsString()
-  assignee?: string;
-}
-
-/** Body for PATCH /admin/incidents/:id. */
-export class UpdateIncidentStatusDto {
-  @IsIn(INCIDENT_STATUSES)
-  status!: (typeof INCIDENT_STATUSES)[number];
-}
 
 /** Nested block of POST /admin/config. */
 export class PricingConfigDto {

@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { AdminService } from './admin.service';
-import { AdminIncidentsService } from './admin-incidents.service';
 import { AdminConfigService } from './admin-config.service';
 import { AdminUsersService } from './admin-users.service';
 import { AdminVerificationsService } from './admin-verifications.service';
@@ -15,7 +14,6 @@ import { SupabaseAdminService } from '../common/supabase-admin.service';
   controllers: [AdminController],
   providers: [
     AdminService,
-    AdminIncidentsService,
     AdminConfigService,
     AdminUsersService,
     AdminVerificationsService,

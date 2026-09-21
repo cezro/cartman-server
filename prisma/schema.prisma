@@ -657,6 +657,18 @@ model merchant_users {
 
 // ── incidents — operational issue / system alert log ────────────────────
 
+/// Vestigial: nothing in this service reads or writes this table any more.
+/// The console-shaped incident log was superseded by `incident_reports`, which
+/// the admin panel reads directly over Supabase and triages through the
+/// `admin_set_incident_status` RPC; the three `/admin/incidents` routes that
+/// were this model's only callers were removed on 2026-09-21.
+///
+/// The model stays anyway, and deliberately. `schema.prisma` is not a list of
+/// what this service queries — it is the list of what `db push` SPARES, so
+/// deleting a model whose table still exists is what puts that table in the
+/// drop-on-push bucket and turns `db:drift` red again. That is the exact
+/// failure the 08-20 incident was made of. Remove this model in the same
+/// change that drops `public.incidents`, never before it.
 model incidents {
   id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   type          String

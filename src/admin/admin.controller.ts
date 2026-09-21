@@ -9,7 +9,6 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
-import { AdminIncidentsService } from './admin-incidents.service';
 import { AdminConfigService } from './admin-config.service';
 import { AdminUsersService } from './admin-users.service';
 import { AdminVerificationsService } from './admin-verifications.service';
@@ -18,15 +17,12 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
-import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import {
   AdminOrdersQueryDto,
   ReassignOrderDto,
   AdminRidersQueryDto,
   AdminMerchantsQueryDto,
   AdminLedgerQueryDto,
-  CreateIncidentDto,
-  UpdateIncidentStatusDto,
   UpdateConfigDto,
   AdminUsersQueryDto,
   AdminVerificationsQueryDto,
@@ -44,7 +40,6 @@ import {
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
-    private readonly incidentsService: AdminIncidentsService,
     private readonly configService: AdminConfigService,
     private readonly usersService: AdminUsersService,
     private readonly verificationsService: AdminVerificationsService,
@@ -89,26 +84,6 @@ export class AdminController {
   @Get('ledger/transactions')
   getLedgerTransactions(@Query() query: AdminLedgerQueryDto) {
     return this.adminService.getLedgerTransactions(query);
-  }
-
-  // ══ Admin Dashboard V2 — incidents ══════════════════════════════════════
-
-  @Get('incidents')
-  getIncidents(@Query() query: PaginationQueryDto) {
-    return this.incidentsService.list(query);
-  }
-
-  @Post('incidents')
-  createIncident(@Body() body: CreateIncidentDto) {
-    return this.incidentsService.create(body);
-  }
-
-  @Patch('incidents/:id')
-  updateIncidentStatus(
-    @Param('id') id: string,
-    @Body() body: UpdateIncidentStatusDto,
-  ) {
-    return this.incidentsService.updateStatus(id, body);
   }
 
   // ══ Admin Dashboard V2 — global config (singleton) ══════════════════════

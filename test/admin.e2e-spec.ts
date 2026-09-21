@@ -99,6 +99,10 @@ describe('AdminModule (e2e)', () => {
         unassigned: 0,
         delivered_today: 0,
         canceled_today: 0,
+        // Added to the service on 2026-08-09 and never mirrored here, which is
+        // why this suite had been red ever since. A failed delivery is not
+        // active, delivered or canceled, so without this count it is invisible.
+        delivery_failed_today: 0,
       },
       fleet: { on_duty: 0, total: 0 },
       cod_today: { expected: 0, remitted: 0 },
