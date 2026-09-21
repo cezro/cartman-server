@@ -114,9 +114,14 @@ export class PushDrainService {
           // between the two leaves the row pending rather than marking it
           // done. A re-sent notification is a duplicate buzz; a wrongly
           // stamped one is silence forever.
+          //
+          // `last_error` is cleared in the same write because this is the only
+          // moment anything can clear it — a stamped row is never selected
+          // again, so an error left behind here describes the row forever and
+          // the queue reads as broken long after it healed.
           await this.prisma.push_outbox.update({
             where: { id: row.id },
-            data: { sent_at: new Date() },
+            data: { sent_at: new Date(), last_error: null },
           });
           sent += 1;
           continue;
