@@ -15,6 +15,7 @@ import {
 import { LedgerService } from '../ledger/ledger.service';
 import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
+import { resolveSelectedModifiers } from './modifiers';
 import type { PlaceMerchantOrderDto } from './dto/place-order.dto';
 
 // -₱2,000 in centavos — mirrors LedgerService's LOCK_FLOOR / accept_order() RPC.
@@ -174,16 +175,31 @@ export class OrdersService {
           );
         }
 
-        subtotal += BigInt(menuItem.price) * BigInt(item.qty);
+        // Options are priced from the dish's own groups, never from the
+        // client's `price` — see ./modifiers. A choice the menu no longer
+        // offers is a 409 (never a 400, which the app answers by retrying
+        // with the choices stripped). The unit price is base + options, which
+        // is what the customer's cart showed (`CartLine.unitPriceCentavos`).
+        const { snapshot, addedPerUnit } = resolveSelectedModifiers(
+          menuItem.modifiers,
+          item.modifiers,
+        );
+        // Floored at zero: a store can price an option below zero ("no
+        // rice"), but a line that pays the customer would turn into a
+        // negative COD debit on the rider's ledger.
+        const rawUnit = BigInt(menuItem.price) + addedPerUnit;
+        const unitPrice = rawUnit < 0n ? 0n : rawUnit;
+
+        subtotal += unitPrice * BigInt(item.qty);
 
         orderItemsData.push({
           menu_item_id: menuItem.id,
           name: menuItem.name,
           qty: item.qty,
-          unit_price: menuItem.price,
-          // The DTO keeps modifiers as `unknown[]` (the client's shape is not
-          // fixed yet); Prisma wants a JSON input value for the jsonb column.
-          modifiers: (item.modifiers ?? []) as Prisma.InputJsonValue,
+          unit_price: unitPrice,
+          // A snapshot with the database's names and prices, so a later menu
+          // edit cannot rewrite what this customer agreed to pay.
+          modifiers: snapshot as unknown as Prisma.InputJsonValue,
         });
       }
 
@@ -242,7 +258,9 @@ export class OrdersService {
           // Undefined leaves the DB default (hand_to_me) in place, so a body
           // that omits these is byte-for-byte the order it always was.
           dropoff_instruction,
-          dropoff_note,
+          // Blank is "no note", not a note of spaces for the rider to read;
+          // undefined leaves the column's null default, like an omitted key.
+          dropoff_note: dropoff_note?.trim() || undefined,
           order_items: {
             create: orderItemsData,
           },

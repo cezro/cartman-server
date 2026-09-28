@@ -19,12 +19,13 @@ import {
 
 /**
  * One line item in a food/grocery order body. Mirrors what
- * cartman-mobile's `_merchantOrderBody` sends (menu_item_id, qty) — see
+ * cartman-mobile's `_merchantOrderBody` sends — see
  * SupabaseOrderRepository.place() in
- * packages/core/lib/src/data/supabase_repositories.dart. `modifiers` is not
- * sent by the mobile client today but OrdersService.placeMerchantOrder
- * already reads `item.modifiers`, so it stays optional here rather than
- * being dropped.
+ * packages/core/lib/src/data/supabase_repositories.dart. `modifiers` is the
+ * customer's chosen dish options, `[{group, name, price}]`, omitted when none
+ * were chosen. Its entries are deliberately not validated here: a malformed or
+ * stale choice must answer 409 from OrdersService (./modifiers), because the
+ * app treats a 400 as "unknown key" and retries without the choices.
  */
 export class OrderItemDto {
   @IsUUID()
