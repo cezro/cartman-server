@@ -120,7 +120,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `DELETE /profiles/me/addresses/:id` | customer | → 2xx |
 | `POST /profiles/me/device-tokens` | both apps | `{token, platform}` → 2xx (JWT-guarded) |
 | `DELETE /profiles/me/device-tokens/:token` | both apps | → 2xx |
-| `POST /storage/upload` | customer | multipart `file` + `path` field → `{publicUrl}`. Customer/rider self-scoped (§5) |
+| `POST /storage/upload` | customer | multipart `file` + `path` field → `{publicUrl}`. Customer/rider self-scoped; merchant confined to `stores\|menu/{own store}/` (§5) |
 | `GET /geo/search` | customer | `?q&lat?&lng?&limit?` → `{results:[{label, address, lat, lng}]}`. Address type-ahead. `q` under 3 chars → 400; `lat`+`lng` (both or neither) bias results locally. **Always 200 otherwise** — upstream failure returns `[]` |
 | `GET /geo/reverse` | customer | `?lat&lng` → `{result: {label, address, lat, lng} \| null}`. Fills the address text from a dropped pin. Always 200 |
 
@@ -301,8 +301,20 @@ The customer cancel path exists but doesn't attribute the cancellation.
 > uploads are forced to `avatars/{auth.uid()}/{basename}` in the default
 > bucket (the key is rebuilt from the basename, so `../`, another uid, or a
 > caller-chosen bucket cannot escape the prefix), `image/*` only, 5 MB cap.
-> Admin/merchant keep free-form bucket/path. Response still
-> `{path, publicUrl}`, 201.
+> Response still `{path, publicUrl}`, 201.
+>
+> **Merchant scope — built 2026-09-28** (`server-handoff.md` §12, for the
+> Merchant Panel's store and dish photo uploads, M-4.1 / M-5.1). A merchant's
+> `path` must be exactly `stores/{merchant_id}/{name}` or
+> `menu/{merchant_id}/{name}`, where `merchant_users` links the caller to
+> `{merchant_id}`; anything else — another store, another folder, a non-uuid
+> id, a missing name, extra segments — is **403**. Same `image/*` + 5 MB limits
+> as customers (**400**). The bucket is forced to the default: uploads run as
+> the service role, which storage policies do not stop, so a caller-chosen
+> bucket would reach the private `merchant-docs` bucket. **Only admin keeps a
+> free-form bucket/path.** `publicUrl` is built from `SUPABASE_URL`, so it is
+> `https` wherever that is — which both photo columns require
+> (`20260926000100`).
 
 The route is `@Roles('admin','merchant')`, so a customer avatar upload
 **403s** (`storage_repository.dart` documents this precisely).

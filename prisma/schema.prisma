@@ -279,6 +279,12 @@ model menu_items {
   in_stock    Boolean @default(true)
   description String?
   modifiers   Json    @default("[]")
+  // Dish photo (20260926000100_menu_item_images.sql); null = the generated
+  // tile. Written by store members over RLS after uploading through
+  // POST /storage/upload. The column carries a check constraint
+  // (`menu_items_image_url_https`, https only) that Prisma cannot express —
+  // another thing a `db push` would silently drop.
+  image_url   String?
 
   // Dish search (20260818000200_menu_item_search.sql). In the database this is
   // `generated always as (to_tsvector('simple', name || description ||

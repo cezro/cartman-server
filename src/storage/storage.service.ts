@@ -1,18 +1,33 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { createClient } from '@supabase/supabase-js';
+import { PrismaService } from '../prisma/prisma.service';
 
 export const DEFAULT_BUCKET = 'cartman-assets';
 export const MAX_SELF_UPLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
+
+/**
+ * The folders a merchant may upload into, each keyed by store id: `stores/`
+ * for the store photo (M-5.1), `menu/` for dish photos (M-4.1). These are the
+ * prefixes the Merchant Panel's `ImageUpload` sends.
+ */
+export const MERCHANT_UPLOAD_FOLDERS = ['stores', 'menu'] as const;
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const NOT_YOUR_STORE =
+  'Photos can only be uploaded to stores/{store id}/ or menu/{store id}/ for a store you belong to';
 
 @Injectable()
 export class StorageService {
   private supabase;
 
-  constructor() {
+  constructor(private readonly prisma: PrismaService) {
     this.supabase = createClient(
       process.env.SUPABASE_URL || 'http://localhost:54321',
       process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy_key',
@@ -20,20 +35,26 @@ export class StorageService {
   }
 
   /**
-   * Upload policy (cartman-server-endpoints.md §5). Admin/merchant keep
-   * free-form bucket/path (menu images, ops exports). Customer/rider uploads
-   * are image-only, size-capped, and always land in avatars/{uid}/ in the
-   * default bucket — the key is rebuilt from the basename of the requested
-   * path, so `..` segments, another user's uid, or a caller-chosen bucket
-   * can never escape the caller's own prefix.
+   * Upload policy (cartman-server-endpoints.md §5). Only admin keeps a
+   * free-form bucket/path (ops exports). Everyone else uploads images only,
+   * capped at 5 MB, into the default bucket, under a key rebuilt from the
+   * basename of the requested path — so `..` segments or a caller-chosen
+   * bucket can never escape the caller's own prefix:
+   *
+   * - customer/rider → `avatars/{uid}/{basename}`.
+   * - merchant → `stores/{merchant_id}/{basename}` or
+   *   `menu/{merchant_id}/{basename}`, and only for a store `merchant_users`
+   *   links the caller to. Anything else is a 403. The bucket is forced too:
+   *   uploads run as the service role, which storage policies do not stop, so
+   *   a free-form bucket would reach the private `merchant-docs` bucket.
    */
-  resolveUploadTarget(
+  async resolveUploadTarget(
     actor: { id: string; role: string },
     file: Express.Multer.File,
     bucket: string,
     path?: string,
-  ): { bucket: string; path: string } {
-    if (actor.role === 'admin' || actor.role === 'merchant') {
+  ): Promise<{ bucket: string; path: string }> {
+    if (actor.role === 'admin') {
       return {
         bucket,
         path: path || `${Date.now()}-${file.originalname}`,
@@ -47,15 +68,36 @@ export class StorageService {
       throw new BadRequestException('File exceeds the 5 MB upload limit');
     }
 
-    const basename =
-      (path ?? '')
-        .split(/[\\/]+/)
-        .filter(Boolean)
-        .pop() ?? '';
+    const segments = (path ?? '').split(/[\\/]+/).filter(Boolean);
+    const basename = segments.at(-1) ?? '';
     const safeName =
       basename && basename !== '.' && basename !== '..'
         ? basename
         : `${Date.now()}-${file.originalname}`;
+
+    if (actor.role === 'merchant') {
+      const [folder, merchantId] = segments;
+      // Exactly folder/id/name: a deeper key would be kept only as its
+      // basename, and a shorter one names no store.
+      if (
+        segments.length !== 3 ||
+        !(MERCHANT_UPLOAD_FOLDERS as readonly string[]).includes(folder) ||
+        !UUID_RE.test(merchantId)
+      ) {
+        throw new ForbiddenException(NOT_YOUR_STORE);
+      }
+      const membership = await this.prisma.merchant_users.findFirst({
+        where: { user_id: actor.id, merchant_id: merchantId },
+        select: { merchant_id: true },
+      });
+      if (!membership) {
+        throw new ForbiddenException(NOT_YOUR_STORE);
+      }
+      return {
+        bucket: DEFAULT_BUCKET,
+        path: `${folder}/${merchantId.toLowerCase()}/${safeName}`,
+      };
+    }
 
     return {
       bucket: DEFAULT_BUCKET,
