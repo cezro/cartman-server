@@ -393,6 +393,154 @@ describe('OrdersService', () => {
   // RPC — it is a parallel implementation writing `orders` through Prisma — so
   // until now a client one version behind could order straight into a paused
   // kitchen. The migration header says so in as many words.
+  // GO-LIVE S2 / server-handoff §9. The app sends the dish options the
+  // customer chose; the server prices them from the menu, never the client.
+  describe('S2 — dish options are priced server-side', () => {
+    const groups = [
+      {
+        name: 'Size',
+        required: true,
+        max: 1,
+        options: [
+          { name: 'Regular', price: 0 },
+          { name: 'Large', price: 3000 },
+        ],
+      },
+      {
+        name: 'Add-ons',
+        required: false,
+        max: 2,
+        options: [{ name: 'Extra rice', price: 2500 }],
+      },
+    ];
+
+    beforeEach(() => {
+      prisma.merchants.findUnique.mockResolvedValue({
+        id: 'm-1',
+        name: 'Kusina',
+        delivery_fee: 4900n,
+      });
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Adobo',
+        price: 12000n,
+        in_stock: true,
+        modifiers: groups,
+      });
+      prisma.orders.create.mockResolvedValue({ id: 'order-x' });
+    });
+
+    const createdData = () =>
+      (prisma.orders.create.mock.calls[0][0] as { data: Record<string, any> })
+        .data;
+
+    it('stores both options at database prices, in the unit price and the total', async () => {
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [
+          {
+            menu_item_id: 'mi-1',
+            qty: 2,
+            // Client prices are wrong on purpose: they must not be used.
+            modifiers: [
+              { group: 'Size', name: 'Large', price: 1 },
+              { group: 'Add-ons', name: 'Extra rice', price: 1 },
+            ],
+          },
+        ],
+        dropoff_instruction: 'leave_at_door',
+        dropoff_note: '  Blue gate  ',
+      });
+
+      const data = createdData();
+      const [line] = data.order_items.create as Array<Record<string, unknown>>;
+      expect(line.modifiers).toEqual([
+        { group: 'Size', name: 'Large', price: 3000 },
+        { group: 'Add-ons', name: 'Extra rice', price: 2500 },
+      ]);
+      // 12000 + 3000 + 2500
+      expect(line.unit_price).toBe(17500n);
+      expect(data.subtotal).toBe(35000n);
+      expect(data.total).toBe(35000n + 4900n);
+      expect(data.dropoff_instruction).toBe('leave_at_door');
+      expect(data.dropoff_note).toBe('Blue gate');
+    });
+
+    it('answers 409 (never 400) for an option the menu no longer has', async () => {
+      await expect(
+        service.placeFoodOrder('customer-1', {
+          merchant_id: 'm-1',
+          items: [
+            {
+              menu_item_id: 'mi-1',
+              qty: 1,
+              modifiers: [{ group: 'Size', name: 'Jumbo', price: 5000 }],
+            },
+          ],
+        }),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.orders.create).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 when a required group is unanswered', async () => {
+      await expect(
+        service.placeFoodOrder('customer-1', {
+          merchant_id: 'm-1',
+          items: [{ menu_item_id: 'mi-1', qty: 1 }],
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('never prices a line below zero', async () => {
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Plain rice',
+        price: 1000n,
+        in_stock: true,
+        modifiers: [
+          {
+            name: 'Size',
+            options: [{ name: 'Half', price: -5000 }],
+          },
+        ],
+      });
+
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [
+          {
+            menu_item_id: 'mi-1',
+            qty: 1,
+            modifiers: [{ group: 'Size', name: 'Half' }],
+          },
+        ],
+      });
+
+      const [line] = createdData().order_items.create as Array<
+        Record<string, unknown>
+      >;
+      expect(line.unit_price).toBe(0n);
+    });
+
+    it('treats a blank drop-off note as no note (column stays null)', async () => {
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [
+          {
+            menu_item_id: 'mi-1',
+            qty: 1,
+            modifiers: [{ group: 'Size', name: 'Regular' }],
+          },
+        ],
+        dropoff_note: '   ',
+      });
+
+      expect(createdData().dropoff_note).toBeUndefined();
+    });
+  });
+
   describe('M-5.2 — busy guard on merchant orders', () => {
     const busyStore = (busy_until: Date | null) => {
       prisma.merchants.findUnique.mockResolvedValue({
@@ -498,9 +646,9 @@ describe('OrdersService', () => {
         is_verified: false,
       });
 
-      await expect(
-        service.claimOrder('order-1', 'rider-1'),
-      ).rejects.toThrow(/still being reviewed/);
+      await expect(service.claimOrder('order-1', 'rider-1')).rejects.toThrow(
+        /still being reviewed/,
+      );
       expect(prisma.orders.updateMany).not.toHaveBeenCalled();
     });
 
@@ -513,17 +661,17 @@ describe('OrdersService', () => {
         is_verified: false,
       });
 
-      await expect(
-        service.claimOrder('order-1', 'rider-1'),
-      ).rejects.toThrow(/still being reviewed/);
+      await expect(service.claimOrder('order-1', 'rider-1')).rejects.toThrow(
+        /still being reviewed/,
+      );
     });
 
     it('rejects a rider row that does not exist at all', async () => {
       prisma.riders.findUnique.mockResolvedValue(null);
 
-      await expect(
-        service.claimOrder('order-1', 'rider-1'),
-      ).rejects.toThrow(/still being reviewed/);
+      await expect(service.claimOrder('order-1', 'rider-1')).rejects.toThrow(
+        /still being reviewed/,
+      );
     });
   });
 
