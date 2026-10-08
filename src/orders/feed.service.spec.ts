@@ -196,6 +196,35 @@ describe('FeedService', () => {
     expect(result[0].distance_km).not.toBeNull();
   });
 
+  it("leaves tricycle-only orders out of a motorcycle rider's feed", async () => {
+    await service.rankedFeed(
+      'rider-1',
+      undefined,
+      undefined,
+      'Honda Click 125i',
+    );
+
+    expect(prisma.orders.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ required_vehicle: null }, { required_vehicle: 'motorcycle' }],
+        }) as Record<string, unknown>,
+      }),
+    );
+  });
+
+  it('shows a tricycle rider the orders waiting for one', async () => {
+    await service.rankedFeed('rider-1', undefined, undefined, 'tricycle');
+
+    expect(prisma.orders.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ required_vehicle: null }, { required_vehicle: 'tricycle' }],
+        }) as Record<string, unknown>,
+      }),
+    );
+  });
+
   it('queries candidates with take 50, orderBy created_at asc, including order_items and order_stops', async () => {
     await service.rankedFeed('rider-1');
 

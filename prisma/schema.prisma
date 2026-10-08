@@ -383,6 +383,13 @@ model orders {
   delivery_failure_reason delivery_failure_reason?
   delivery_failed_at      DateTime?                @db.Timestamptz()
 
+  // The vehicle this order is waiting for: null = any rider, 'tricycle' once
+  // a motorcycle rider handed it back as too big (`rider_request_bigger_vehicle`,
+  // cartman-mobile 20261008000100). CHECK-constrained to 'motorcycle' |
+  // 'tricycle' in the database. The feed and the claim filter on it (see
+  // src/orders/vehicle.ts); a trigger enforces it for every other writer.
+  required_vehicle String?
+
   created_at DateTime @default(now()) @db.Timestamptz()
   updated_at DateTime @default(now()) @db.Timestamptz()
 

@@ -710,6 +710,62 @@ describe('OrdersService', () => {
     });
   });
 
+  describe('claim honours the vehicle an order is waiting for', () => {
+    const riderOn = (vehicle: string) => ({
+      id: 'rider-1',
+      is_active: true,
+      is_verified: true,
+      vehicle,
+    });
+
+    beforeEach(() => {
+      ledgerService.getNetCash.mockResolvedValue(0n);
+      prisma.orders.count.mockResolvedValue(0);
+    });
+
+    it("puts the rider's vehicle inside the one conditional write", async () => {
+      prisma.riders.findUnique.mockResolvedValue(riderOn('tricycle'));
+      prisma.orders.updateMany.mockResolvedValue({ count: 1 });
+      prisma.orders.findUnique.mockResolvedValue({
+        id: 'order-1',
+        status: order_status.accepted,
+        assigned_rider_id: 'rider-1',
+      });
+
+      await service.claimOrder('order-1', 'rider-1');
+
+      expect(prisma.orders.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: [{ required_vehicle: null }, { required_vehicle: 'tricycle' }],
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('tells a motorcycle rider the order needs a tricycle', async () => {
+      prisma.riders.findUnique.mockResolvedValue(riderOn('motorcycle'));
+      prisma.orders.updateMany.mockResolvedValue({ count: 0 });
+      prisma.orders.findUnique.mockResolvedValue({
+        required_vehicle: 'tricycle',
+      });
+
+      await expect(service.claimOrder('order-1', 'rider-1')).rejects.toThrow(
+        'This order needs a tricycle',
+      );
+    });
+
+    it('a plain lost race still reads as one', async () => {
+      prisma.riders.findUnique.mockResolvedValue(riderOn('motorcycle'));
+      prisma.orders.updateMany.mockResolvedValue({ count: 0 });
+      prisma.orders.findUnique.mockResolvedValue({ required_vehicle: null });
+
+      await expect(service.claimOrder('order-1', 'rider-1')).rejects.toThrow(
+        'Order is no longer available or already claimed',
+      );
+    });
+  });
+
   describe('3.4 — claim queue-depth guard (max 1 active + 1 queued)', () => {
     beforeEach(() => {
       prisma.riders.findUnique.mockResolvedValue({

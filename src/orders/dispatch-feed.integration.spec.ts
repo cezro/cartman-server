@@ -41,7 +41,11 @@ function makeFakePrisma() {
 
   const matches = (row: Row, where: Row = {}): boolean => {
     for (const [key, cond] of Object.entries(where)) {
-      if (cond !== null && typeof cond === 'object' && 'in' in cond) {
+      if (key === 'OR') {
+        if (!(cond as Row[]).some((branch) => matches(row, branch))) {
+          return false;
+        }
+      } else if (cond !== null && typeof cond === 'object' && 'in' in cond) {
         if (!(cond as { in: unknown[] }).in.includes(row[key])) return false;
       } else if (row[key] !== cond) {
         return false;
@@ -67,6 +71,7 @@ function makeFakePrisma() {
           delivery_payout: 0n,
           pickup_lat: null,
           pickup_lng: null,
+          required_vehicle: null,
           created_at: NOW,
           ...columns,
           order_items: ((order_items as NestedRows)?.create ?? []).map(
@@ -128,8 +133,14 @@ function makeFakePrisma() {
         ),
     },
     riders: {
-      findUnique: () =>
-        Promise.resolve({ id: 'rider-1', is_active: true, is_verified: true }),
+      // 'trike-1' rides a tricycle; everyone else a motorcycle.
+      findUnique: ({ where }: { where: Row }) =>
+        Promise.resolve({
+          id: where.id,
+          is_active: true,
+          is_verified: true,
+          vehicle: where.id === 'trike-1' ? 'tricycle' : 'motorcycle',
+        }),
     },
     rider_locations: { findFirst: () => Promise.resolve(null) },
     rider_wallet_transactions: {
@@ -149,11 +160,13 @@ function makeFakePrisma() {
 describe('dispatch → rider feed (MM-4 proof)', () => {
   let ordersService: OrdersService;
   let feedService: FeedService;
+  let fake: ReturnType<typeof makeFakePrisma>;
 
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(NOW);
-    const prisma = makeFakePrisma() as unknown as PrismaService;
+    fake = makeFakePrisma();
+    const prisma = fake as unknown as PrismaService;
     const ledger = {
       getNetCash: jest.fn().mockResolvedValue(0n),
     } as unknown as LedgerService;
@@ -236,5 +249,34 @@ describe('dispatch → rider feed (MM-4 proof)', () => {
     // claimed by a rider → gone from everyone's feed
     await ordersService.claimOrder(food.id, 'rider-1');
     expect(await feedIds()).not.toContain(food.id);
+  });
+
+  it('an order handed back as too big reaches tricycles only', async () => {
+    const parcel = await ordersService.placeErrandOrder('cust-1', {
+      errand_payload: null,
+      notes: 'Ref, two-door',
+      dropoff_lat: 10.1,
+      dropoff_lng: 122.1,
+    });
+    // What rider_request_bigger_vehicle leaves behind.
+    await fake.orders.update({
+      where: { id: parcel.id },
+      data: { required_vehicle: 'tricycle' },
+    });
+
+    const idsFor = async (vehicle: string) =>
+      (await feedService.rankedFeed('x', undefined, undefined, vehicle)).map(
+        (e) => e.order.id as string,
+      );
+    expect(await idsFor('motorcycle')).not.toContain(parcel.id);
+    expect(await idsFor('Honda Click 125i')).not.toContain(parcel.id);
+    expect(await idsFor('tricycle')).toContain(parcel.id);
+
+    // The claim agrees with the feed, and says why.
+    await expect(
+      ordersService.claimOrder(parcel.id, 'rider-1'),
+    ).rejects.toThrow('This order needs a tricycle');
+    const claimed = await ordersService.claimOrder(parcel.id, 'trike-1');
+    expect(claimed.assigned_rider_id).toBe('trike-1');
   });
 });

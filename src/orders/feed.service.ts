@@ -4,6 +4,7 @@ import { LedgerService } from '../ledger/ledger.service';
 import { order_status, order_type } from '@prisma/client';
 import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
+import { claimableBy, vehicleClass } from './vehicle';
 
 const AGE_CAP_MINUTES = 30;
 // R-4.1 accept-window: how long a card counts down before the client shows
@@ -77,16 +78,24 @@ export class FeedService {
       envWeight('FEED_ACCEPT_WINDOW_MINUTES', ACCEPT_WINDOW_MINUTES) * 60_000;
   }
 
+  /**
+   * [vehicle] is the rider's `riders.vehicle` (the controller has already
+   * read the row). Orders waiting for a tricycle are left out for everyone
+   * else — the claim would refuse them anyway, so showing them is a card the
+   * rider can only lose time on.
+   */
   async rankedFeed(
     riderId: string,
     lat?: number,
     lng?: number,
+    vehicle?: string | null,
   ): Promise<FeedEntry[]> {
     const [candidates, riderPos] = await Promise.all([
       this.prisma.orders.findMany({
         where: {
           status: order_status.ready_for_pickup,
           assigned_rider_id: null,
+          ...claimableBy(vehicleClass(vehicle)),
         },
         take: CANDIDATE_LIMIT,
         orderBy: { created_at: 'asc' },
