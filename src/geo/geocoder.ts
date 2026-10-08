@@ -34,7 +34,11 @@ export interface Geocoder {
 // Mapbox Geocoding v6
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The slice of Mapbox's v6 feature object we actually read. */
+/**
+ * The slice of a Mapbox feature we actually read. Geocoding v6 and Search Box
+ * both put name, place_formatted, full_address and coordinates under
+ * `properties`, so one shape serves both.
+ */
 interface MapboxV6Feature {
   properties?: {
     name?: string;
@@ -65,12 +69,68 @@ export class MapboxGeocoder implements Geocoder {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
+  /**
+   * Type-ahead. **Search Box API** first; Geocoding v6 fills what is left.
+   *
+   * Geocoding v6 is an address geocoder — Mapbox dropped points of interest
+   * from Geocoding and points landmark search at Search Box. So "SM City
+   * Iloilo" came back as five roads named "Iloilo …" and "Ateneo de Manila"
+   * as "Manila": customers search by landmark, and got streets.
+   *
+   * Search Box has the opposite blind spot: it ranks shops above a street, so
+   * "Lopez Jaena St Jaro" is five stores on Lopez Jaena. When it returns fewer
+   * than [limit] places, v6 fills the remaining slots (duplicates dropped), so
+   * a street or a thin answer still gets its streets.
+   *
+   * Failure only ever falls back. Search Box erroring (an outage, a token
+   * without Search access) is exactly today's v6 search; a v6 fill failing
+   * keeps the Search Box results. Only v6 failing *with nothing else to show*
+   * throws — that is the case GeoService's fail-soft policy needs to see.
+   */
   async forward(params: {
     q: string;
     limit: number;
     proximity?: { lat: number; lng: number };
   }): Promise<GeoPlace[]> {
-    const url = new URL('https://api.mapbox.com/search/geocode/v6/forward');
+    let primary: GeoPlace[] = [];
+    try {
+      const url = this.forwardUrl(
+        'https://api.mapbox.com/search/searchbox/v1/forward',
+        params,
+      );
+      // Partial and fuzzy matches — the field is filled one keystroke at a
+      // time.
+      url.searchParams.set('auto_complete', 'true');
+      primary = toPlaces(await this.get(url));
+    } catch {
+      // A non-2xx is logged by get(); either way v6 is the answer below.
+    }
+    if (primary.length >= params.limit) return primary.slice(0, params.limit);
+
+    const v6 = this.forwardUrl(
+      'https://api.mapbox.com/search/geocode/v6/forward',
+      params,
+    );
+    let fill: GeoPlace[];
+    try {
+      fill = toPlaces(await this.get(v6));
+    } catch (err) {
+      if (primary.length === 0) throw err;
+      fill = [];
+    }
+    return dedupePlaces([...primary, ...fill]).slice(0, params.limit);
+  }
+
+  /** The parameters both forward endpoints share, set the same way. */
+  private forwardUrl(
+    endpoint: string,
+    params: {
+      q: string;
+      limit: number;
+      proximity?: { lat: number; lng: number };
+    },
+  ): URL {
+    const url = new URL(endpoint);
     url.searchParams.set('q', params.q);
     url.searchParams.set('limit', String(params.limit));
     url.searchParams.set('country', GEO_COUNTRY);
@@ -84,11 +144,7 @@ export class MapboxGeocoder implements Geocoder {
         `${params.proximity.lng},${params.proximity.lat}`,
       );
     }
-
-    const body = await this.get(url);
-    return (body.features ?? [])
-      .map((f) => toPlace(f))
-      .filter((p): p is GeoPlace => p !== null);
+    return url;
   }
 
   async reverse(params: {
@@ -123,7 +179,29 @@ export class MapboxGeocoder implements Geocoder {
 }
 
 /**
- * Maps one Mapbox v6 feature onto our stable shape, or null when it lacks the
+ * Drops a place already listed: same name, within ~100 m. Search Box and v6
+ * often both know "SM City Iloilo", at slightly different coordinates.
+ */
+function dedupePlaces(places: GeoPlace[]): GeoPlace[] {
+  const seen = new Set<string>();
+  return places.filter((p) => {
+    const key = `${p.label.toLowerCase()}@${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Every usable place in a response, in the upstream's ranking order. */
+function toPlaces(body: MapboxV6Response): GeoPlace[] {
+  return (body.features ?? [])
+    .map((f) => toPlace(f))
+    .filter((p): p is GeoPlace => p !== null);
+}
+
+/**
+ * Maps one Mapbox feature onto our stable shape — Search Box and Geocoding v6
+ * share the fields read here — or null when it lacks the
  * coordinates that make it usable (a saved address without a pin is
  * undeliverable, so a result we can't pin is worse than no result).
  */
