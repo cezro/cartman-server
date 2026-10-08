@@ -15,6 +15,7 @@ import {
 import { LedgerService } from '../ledger/ledger.service';
 import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
+import { claimableBy, vehicleClass } from './vehicle';
 import { resolveSelectedModifiers } from './modifiers';
 import type { PlaceMerchantOrderDto } from './dto/place-order.dto';
 
@@ -699,11 +700,17 @@ export class OrdersService {
       throw new BadRequestException('Finish your current orders first');
     }
 
+    // The vehicle condition sits inside the one conditional write, so it is
+    // as atomic as the claim itself; the database trigger
+    // `orders_enforce_required_vehicle` holds the same rule for every other
+    // writer.
+    const cls = vehicleClass(rider.vehicle);
     const result = await this.prisma.orders.updateMany({
       where: {
         id: orderId,
         assigned_rider_id: null,
         status: order_status.ready_for_pickup,
+        ...claimableBy(cls),
       },
       data: {
         assigned_rider_id: riderId,
@@ -712,6 +719,18 @@ export class OrdersService {
     });
 
     if (result.count === 0) {
+      // Only on the losing path: say "needs a tricycle" rather than "already
+      // claimed" when that is the real reason, so the rider does not think
+      // they were simply too slow.
+      const missed = await this.prisma.orders.findUnique({
+        where: { id: orderId },
+        select: { required_vehicle: true },
+      });
+      if (missed?.required_vehicle && missed.required_vehicle !== cls) {
+        throw new BadRequestException(
+          `This order needs a ${missed.required_vehicle}`,
+        );
+      }
       throw new BadRequestException(
         'Order is no longer available or already claimed',
       );

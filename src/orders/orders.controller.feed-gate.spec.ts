@@ -120,10 +120,17 @@ describe('OrdersController — feed approval gate', () => {
       id: 'rider-1',
       is_active: true,
       is_verified: true,
+      vehicle: 'tricycle',
     });
 
     await controller.getFeed(rider, '10.7', '122.5');
 
-    expect(feedService.rankedFeed).toHaveBeenCalledWith('rider-1', 10.7, 122.5);
+    // The vehicle rides along so tricycle-only orders reach tricycles only.
+    expect(feedService.rankedFeed).toHaveBeenCalledWith(
+      'rider-1',
+      10.7,
+      122.5,
+      'tricycle',
+    );
   });
 });

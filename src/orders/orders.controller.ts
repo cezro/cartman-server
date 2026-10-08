@@ -190,7 +190,7 @@ export class OrdersController {
 
     const lat = parseOptionalFloat(latParam);
     const lng = parseOptionalFloat(lngParam);
-    return this.feedService.rankedFeed(user.id, lat, lng);
+    return this.feedService.rankedFeed(user.id, lat, lng, rider.vehicle);
   }
 
   @Patch(':id/claim')
