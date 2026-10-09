@@ -171,7 +171,8 @@ swallows every error to `[]`/`null` for the same reason, and short-circuits
 queries under 3 characters without a request.
 
 Tiles deliberately do **not** go through here — dozens of requests per map pan,
-latency-sensitive, and the app's basemap (CARTO) needs no key at all.
+latency-sensitive, and the app's basemap (Mapbox) uses a public `pk.*`
+token that is safe to ship in the APK.
 
 ---
 
