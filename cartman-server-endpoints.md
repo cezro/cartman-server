@@ -110,7 +110,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC). Response embeds `order_items` + `order_stops` (boots the active screen) |
 | `PATCH /orders/:id/status` | rider | `{status}` → order JSON (`advance_order_status` RPC) |
 | `POST /riders/onboard` | rider | `{vehicle?, plate_no?, phone?}` → `riders` row. Promotes the **caller** (id from the JWT, never the body) to `role='rider'` and creates their `riders` row. **The only riders route with no `@Roles`** — see the auth model above |
-| `GET /riders/me/history` | rider | → `[order JSON]`, delivered, caller-scoped |
+| `GET /riders/me/history` | rider | `?since?` → `[order JSON]`, delivered, caller-scoped, newest first. Without `since`: the 20 most recent. With `since` (ISO-8601, at most 31 days back, else **400**): every delivery earned on or after it (`delivered_at`, else `created_at`) — use this for anything that sums a period |
 | `PATCH /riders/me/duty` | rider | `{is_active: bool}` → `{}` (`set_duty` RPC) |
 | `GET /ledger/me/wallet` | rider | → `{balance: string}` (centavos; `rider_net_cash`) |
 | `GET /ledger/me/earnings-today` | rider | → `{earnings_today: number}` (centavos) |
