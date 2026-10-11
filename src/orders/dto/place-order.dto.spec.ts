@@ -97,6 +97,25 @@ describe('PlacePickupDropoffOrderDto', () => {
     expect(errors).toHaveLength(0);
   });
 
+  it('accepts a declared package size and the parcel photo payload (courier-only)', async () => {
+    const dto = plainToInstance(PlacePickupDropoffOrderDto, {
+      ...validBody,
+      package_size: 'large',
+      errand_payload: { item_photo_url: 'https://cdn.example/p.jpg' },
+    });
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects a package size outside small/medium/large', async () => {
+    const dto = plainToInstance(PlacePickupDropoffOrderDto, {
+      ...validBody,
+      package_size: 'huge',
+    });
+    const errors = await validate(dto);
+    expect(errors.map((e) => e.property)).toEqual(['package_size']);
+  });
+
   it('rejects missing dropoff coordinates', async () => {
     const { dropoff_lat, dropoff_lng, ...rest } = validBody;
     void dropoff_lat;
