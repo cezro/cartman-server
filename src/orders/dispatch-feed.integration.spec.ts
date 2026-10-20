@@ -30,6 +30,8 @@ function makeFakePrisma() {
     id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     name: 'Jollibee BGC',
     delivery_fee: 4900n,
+    is_open: true,
+    min_order: 0n,
   };
   const menuItem = {
     id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',

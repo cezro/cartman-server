@@ -11,6 +11,15 @@ export const DEFAULT_BUCKET = 'cartman-assets';
 export const MAX_SELF_UPLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
 
 /**
+ * The photo types non-admin uploads may be — what the apps (`.jpg`) and the
+ * panel's `ImageUpload` (jpeg/png/webp) send. Not `image/*`: the default
+ * bucket is public and serves from the project's origin, and an SVG is an
+ * image that can carry script. The bucket's `allowed_mime_types`
+ * (cartman-mobile `20261020130000_cartman_assets_bucket`) holds the same list.
+ */
+export const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+/**
  * The folders a merchant may upload into, each keyed by store id: `stores/`
  * for the store photo (M-5.1), `menu/` for dish photos (M-4.1). These are the
  * prefixes the Merchant Panel's `ImageUpload` sends.
@@ -61,8 +70,10 @@ export class StorageService {
       };
     }
 
-    if (!file.mimetype?.startsWith('image/')) {
-      throw new BadRequestException('Only image uploads are allowed');
+    if (!ALLOWED_IMAGE_TYPES.includes(file.mimetype)) {
+      throw new BadRequestException(
+        'Only JPEG, PNG or WebP photos can be uploaded',
+      );
     }
     if (file.size > MAX_SELF_UPLOAD_BYTES) {
       throw new BadRequestException('File exceeds the 5 MB upload limit');

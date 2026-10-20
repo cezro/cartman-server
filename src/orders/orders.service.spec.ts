@@ -261,6 +261,8 @@ describe('OrdersService', () => {
         id: 'm-1',
         name: 'Kusina',
         delivery_fee: 4900n,
+        is_open: true,
+        min_order: 0n,
       });
       prisma.menu_items.findUnique.mockResolvedValue({
         id: 'mi-1',
@@ -291,6 +293,8 @@ describe('OrdersService', () => {
         id: 'merchant-1',
         name: 'Merchant',
         delivery_fee: 3000n,
+        is_open: true,
+        min_order: 0n,
       });
       prisma.menu_items.findUnique.mockResolvedValue({
         id: 'item-1',
@@ -328,6 +332,8 @@ describe('OrdersService', () => {
         id: 'm-1',
         name: 'Kusina',
         delivery_fee: 4900n,
+        is_open: true,
+        min_order: 0n,
       });
       prisma.menu_items.findUnique.mockResolvedValue({
         id: 'mi-1',
@@ -463,6 +469,8 @@ describe('OrdersService', () => {
         id: 'm-1',
         name: 'Kusina',
         delivery_fee: 4900n,
+        is_open: true,
+        min_order: 0n,
       });
       prisma.menu_items.findUnique.mockResolvedValue({
         id: 'mi-1',
@@ -591,6 +599,8 @@ describe('OrdersService', () => {
         id: 'm-1',
         name: 'Kusina',
         delivery_fee: 4900n,
+        is_open: true,
+        min_order: 0n,
         busy_until,
       });
       prisma.menu_items.findUnique.mockResolvedValue({
@@ -673,6 +683,150 @@ describe('OrdersService', () => {
         service.placeFoodOrder('customer-1', anOrder()),
       ).rejects.toThrow(ConflictException);
       expect(prisma.menu_items.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  // S8 / S9 (GO-LIVE-IDE-SESSION.md, e2e run of 2026-10-13). The app refuses
+  // both before checkout, but this route is the write path and an older build
+  // or a direct call never asked the app: production took a ₱125 order at a
+  // store with a ₱500 minimum, and orders to a store with is_open = false.
+  describe('S8 / S9 — a closed store, and a basket under the minimum', () => {
+    const store = (fields: {
+      is_open?: boolean;
+      min_order?: bigint;
+      busy_until?: Date | null;
+    }) => {
+      prisma.merchants.findUnique.mockResolvedValue({
+        id: 'm-1',
+        name: 'Kusina',
+        delivery_fee: 4900n,
+        is_open: true,
+        min_order: 0n,
+        busy_until: null,
+        ...fields,
+      });
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Pancit',
+        price: 12500n,
+        in_stock: true,
+      });
+      prisma.orders.create.mockResolvedValue({ id: 'order-x' });
+    };
+
+    const anOrder = (qty = 1) => ({
+      merchant_id: 'm-1',
+      items: [{ menu_item_id: 'mi-1', qty }],
+    });
+
+    it("refuses an order to a closed store with 409, in the app's words", async () => {
+      store({ is_open: false });
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: 'Kusina is closed right now.',
+      });
+      expect(prisma.orders.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a closed store before pricing the basket', async () => {
+      store({ is_open: false });
+
+      await expect(
+        service.placeGroceryOrder('customer-1', anOrder()),
+      ).rejects.toThrow(ConflictException);
+      expect(prisma.menu_items.findUnique).not.toHaveBeenCalled();
+    });
+
+    // Closed outranks paused: a store that is shut is not "back shortly".
+    it('says closed, not paused, when a closed store is also paused', async () => {
+      store({
+        is_open: false,
+        busy_until: new Date(Date.now() + 15 * 60_000),
+      });
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toMatchObject({ message: 'Kusina is closed right now.' });
+    });
+
+    // 409, never 400: the app answers a 400 on an order carrying options by
+    // retrying it with the options stripped, which would not fix a short
+    // basket and would lose the customer's choices.
+    it('refuses a basket under the minimum with 409 and the shortfall', async () => {
+      store({ min_order: 50000n });
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toMatchObject({
+        status: 409,
+        // The cart's MinOrderNudge sentence, so the two read the same.
+        message: "Add ₱375.00 more to reach Kusina's ₱500.00 minimum order.",
+      });
+      expect(prisma.orders.create).not.toHaveBeenCalled();
+    });
+
+    it('takes a basket that meets the minimum exactly', async () => {
+      store({ min_order: 25000n });
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder(2)),
+      ).resolves.toBeDefined();
+      expect(prisma.orders.create).toHaveBeenCalled();
+    });
+
+    // The minimum is on the food, as the cart computes it
+    // (MinOrderNudge.isShort compares the subtotal) — the delivery fee does
+    // not buy a customer past it.
+    it('does not count the delivery fee toward the minimum', async () => {
+      store({ min_order: 15000n });
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('counts chosen options toward the minimum', async () => {
+      store({ min_order: 15000n });
+      prisma.menu_items.findUnique.mockResolvedValue({
+        id: 'mi-1',
+        merchant_id: 'm-1',
+        name: 'Pancit',
+        price: 12500n,
+        in_stock: true,
+        modifiers: [
+          {
+            name: 'Size',
+            required: false,
+            max: 1,
+            options: [{ name: 'Large', price: 3000 }],
+          },
+        ],
+      });
+
+      await expect(
+        service.placeFoodOrder('customer-1', {
+          merchant_id: 'm-1',
+          items: [
+            {
+              menu_item_id: 'mi-1',
+              qty: 1,
+              modifiers: [{ group: 'Size', name: 'Large', price: 3000 }],
+            },
+          ],
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('a store with no minimum (0) takes any basket', async () => {
+      store({ min_order: 0n });
+
+      await expect(
+        service.placeFoodOrder('customer-1', anOrder()),
+      ).resolves.toBeDefined();
     });
   });
 
@@ -1068,6 +1222,91 @@ describe('OrdersService', () => {
 
         expect(prisma.rider_wallet_transactions.create).not.toHaveBeenCalled();
       });
+
+      // S10: advance_order_status adds the trip in the same transaction as
+      // the ledger rows. This route did not, so riders.total_trips stayed at
+      // 0 for every delivery the rider app completed.
+      it('counts the delivery as one trip on the rider record', async () => {
+        prisma.orders.findUnique.mockResolvedValue({
+          id: 'order-1',
+          status: order_status.in_transit,
+          assigned_rider_id: 'rider-1',
+        });
+        prisma.orders.update.mockResolvedValue({
+          id: 'order-1',
+          status: order_status.delivered,
+          assigned_rider_id: 'rider-1',
+          delivery_payout: 4900n,
+          total: 15000n,
+          payment: 'cod',
+        });
+        prisma.rider_wallet_transactions.findFirst.mockResolvedValue(null);
+
+        await service.advanceRiderStatus(
+          'order-1',
+          'rider-1',
+          order_status.delivered,
+        );
+
+        expect(prisma.riders.updateMany).toHaveBeenCalledTimes(1);
+        expect(prisma.riders.updateMany).toHaveBeenCalledWith({
+          where: { id: 'rider-1' },
+          data: { total_trips: { increment: 1 } },
+        });
+      });
+
+      // The same guard that stops a second credit stops a second trip: two
+      // concurrent delivered calls can both pass the stale transition read.
+      it('does not count the trip again when the reward is already written', async () => {
+        prisma.orders.findUnique.mockResolvedValue({
+          id: 'order-1',
+          status: order_status.in_transit,
+          assigned_rider_id: 'rider-1',
+        });
+        prisma.orders.update.mockResolvedValue({
+          id: 'order-1',
+          status: order_status.delivered,
+          assigned_rider_id: 'rider-1',
+          delivery_payout: 4900n,
+          total: 15000n,
+          payment: 'cod',
+        });
+        prisma.rider_wallet_transactions.findFirst.mockResolvedValue({
+          id: 1n,
+          order_id: 'order-1',
+          type: 'credit_delivery_reward',
+        });
+
+        await service.advanceRiderStatus(
+          'order-1',
+          'rider-1',
+          order_status.delivered,
+        );
+
+        expect(prisma.rider_wallet_transactions.create).not.toHaveBeenCalled();
+        expect(prisma.riders.updateMany).not.toHaveBeenCalled();
+      });
+
+      it('counts no trip on the steps before delivery', async () => {
+        prisma.orders.findUnique.mockResolvedValue({
+          id: 'order-1',
+          status: order_status.picked_up,
+          assigned_rider_id: 'rider-1',
+        });
+        prisma.orders.update.mockResolvedValue({
+          id: 'order-1',
+          status: order_status.in_transit,
+          assigned_rider_id: 'rider-1',
+        });
+
+        await service.advanceRiderStatus(
+          'order-1',
+          'rider-1',
+          order_status.in_transit,
+        );
+
+        expect(prisma.riders.updateMany).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -1094,6 +1333,8 @@ describe('OrdersService', () => {
         id: 'merchant-1',
         name: 'Merchant',
         delivery_fee: 3000n,
+        is_open: true,
+        min_order: 0n,
       });
       prisma.menu_items.findUnique.mockResolvedValue({
         id: 'item-1',
@@ -1635,7 +1876,7 @@ describe('OrdersService', () => {
       });
       expect(prisma.merchants.updateMany).toHaveBeenCalledWith({
         where: { id: 'merchant-1' },
-        data: { rating: 5 },
+        data: { rating: 5, rating_count: 1 },
       });
       expect(prisma.riders.updateMany).toHaveBeenCalledWith({
         where: { id: 'rider-1' },
@@ -1669,11 +1910,30 @@ describe('OrdersService', () => {
       );
       expect(prisma.merchants.updateMany).toHaveBeenCalledWith({
         where: { id: 'merchant-1' },
-        data: { rating: 4.33 },
+        data: { rating: 4.33, rating_count: 3 },
       });
       expect(prisma.riders.updateMany).toHaveBeenCalledWith({
         where: { id: 'rider-1' },
         data: { rating: 4.5 },
+      });
+    });
+
+    // S11: rate_order has kept merchants.rating_count beside the average since
+    // 20260915000200, and the storefront shows "4.7 (312)". This route
+    // recomputed the average alone, so every rating the app sent left the
+    // count at 0. It is recounted from the same aggregate as the average,
+    // never incremented, so the two cannot drift apart.
+    it('keeps merchants.rating_count, from the same count as the average', async () => {
+      prisma.order_ratings.aggregate.mockResolvedValue({
+        _sum: { merchant_stars: 22, rider_stars: 5 },
+        _count: { merchant_stars: 5, rider_stars: 1 },
+      });
+
+      await service.rateOrder('order-1', 'cust-1', { merchant_stars: 5 });
+
+      expect(prisma.merchants.updateMany).toHaveBeenCalledWith({
+        where: { id: 'merchant-1' },
+        data: { rating: 4.4, rating_count: 5 },
       });
     });
 

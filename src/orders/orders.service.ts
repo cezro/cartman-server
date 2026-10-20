@@ -17,6 +17,7 @@ import { haversineKm } from './geo';
 import { serializeOrder } from './serialize-order';
 import { claimableBy, vehicleClass } from './vehicle';
 import { resolveSelectedModifiers } from './modifiers';
+import { formatPeso } from '../common/peso';
 import type {
   PlaceMerchantOrderDto,
   PlacePickupDropoffOrderDto,
@@ -134,6 +135,15 @@ export class OrdersService {
       });
       if (!merchant) throw new BadRequestException('Merchant not found');
 
+      // S9. `is_open` is the store's "trading at all" switch, and the app
+      // refuses checkout when it is off (`Merchant.canOrder`) — but the app is
+      // not the only client, and production took orders for a closed store.
+      // Checked before the pause: a store that is shut is not "back shortly".
+      // 409 for the same reason as the pause, in the checkout's own words.
+      if (!merchant.is_open) {
+        throw new ConflictException(`${merchant.name} is closed right now.`);
+      }
+
       // A store that paused while the customer was building a basket would
       // otherwise be handed an order it has already said it cannot cook.
       //
@@ -205,6 +215,19 @@ export class OrdersService {
           // edit cannot rewrite what this customer agreed to pay.
           modifiers: snapshot as unknown as Prisma.InputJsonValue,
         });
+      }
+
+      // S8. The store's minimum is on the food — options in, delivery fee
+      // out — which is what the cart measures (`MinOrderNudge.isShort`).
+      // Production took a ₱125 order at a ₱500-minimum store. 409, never 400:
+      // the app retries a 400 with the dish options stripped, which would not
+      // lengthen the basket and would lose the customer's choices.
+      if (subtotal < merchant.min_order) {
+        const short = merchant.min_order - subtotal;
+        throw new ConflictException(
+          `Add ${formatPeso(short)} more to reach ${merchant.name}'s ` +
+            `${formatPeso(merchant.min_order)} minimum order.`,
+        );
       }
 
       const delivery_fee = merchant.delivery_fee;
@@ -836,6 +859,16 @@ export class OrdersService {
               },
             });
           }
+
+          // S10. advance_order_status counts the trip in the same transaction
+          // as the ledger rows; this route did not, so every delivery the
+          // rider app completed left riders.total_trips where it was. Inside
+          // the reward guard, so a concurrent second call counts nothing.
+          // updateMany, like the RPC's plain UPDATE: no row is a no-op.
+          await tx.riders.updateMany({
+            where: { id: riderId },
+            data: { total_trips: { increment: 1 } },
+          });
         }
       }
 
@@ -950,6 +983,10 @@ export class OrdersService {
                 agg._count.merchant_stars,
                 0,
               ),
+              // S11: rate_order keeps the count beside the average
+              // (20260915000200). Recounted from the same aggregate, never
+              // incremented, so the two cannot drift apart.
+              rating_count: agg._count.merchant_stars,
             },
           });
         }

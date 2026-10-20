@@ -108,6 +108,37 @@ describe('StorageService.resolveUploadTarget', () => {
     ).rejects.toThrow(BadRequestException);
   });
 
+  // The default bucket is public, so whatever lands there is served from the
+  // project's own origin. An SVG is an image/* that can carry script; the
+  // bucket's allowed_mime_types (cartman-mobile 20261020130000) refuses it
+  // too, and refusing it here makes that a clean 400 instead of a storage
+  // error surfacing as a 500.
+  it('rejects an SVG, and any image type the bucket does not take', async () => {
+    for (const mimetype of ['image/svg+xml', 'image/gif']) {
+      await expect(
+        service.resolveUploadTarget(
+          customer,
+          { ...imageFile, mimetype },
+          'cartman-assets',
+          'avatars/pic',
+        ),
+      ).rejects.toThrow(BadRequestException);
+    }
+  });
+
+  it('takes the three photo types the apps and the panel send', async () => {
+    for (const mimetype of ['image/jpeg', 'image/png', 'image/webp']) {
+      await expect(
+        service.resolveUploadTarget(
+          customer,
+          { ...imageFile, mimetype },
+          'cartman-assets',
+          'avatars/pic',
+        ),
+      ).resolves.toMatchObject({ bucket: 'cartman-assets' });
+    }
+  });
+
   it('rejects customer uploads over the size cap', async () => {
     await expect(
       service.resolveUploadTarget(
