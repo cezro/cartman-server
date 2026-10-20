@@ -142,6 +142,145 @@ describe('MapboxGeocoder.forward', () => {
   });
 });
 
+/** A fetch double that answers each call from its own entry, in order. */
+function scriptedFetch(
+  responses: Array<{ body: unknown; ok?: boolean; status?: number }>,
+) {
+  const calls: string[] = [];
+  const impl = jest.fn((url: string | URL | Request) => {
+    calls.push(
+      url instanceof URL ? url.href : typeof url === 'string' ? url : url.url,
+    );
+    const r = responses[Math.min(calls.length - 1, responses.length - 1)];
+    return Promise.resolve({
+      ok: r.ok ?? true,
+      status: r.status ?? 200,
+      statusText: 'stub',
+      json: () => Promise.resolve(r.body),
+    } as Response);
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+describe('MapboxGeocoder.forward — landmarks via Search Box', () => {
+  // Geocoding v6 is an address geocoder: "SM City Iloilo" came back as five
+  // roads named "Iloilo …", never the mall. Type-ahead asks Search Box, which
+  // knows places people actually search for, first.
+  it('asks the Search Box API first, as type-ahead', async () => {
+    const { impl, calls } = fakeFetch(IIexample);
+    // limit 1, which the one Search Box result fills: no second call needed.
+    await new MapboxGeocoder('sk.test', impl).forward({ q: 'sm', limit: 1 });
+
+    const first = new URL(calls[0]);
+    expect(first.pathname).toBe('/search/searchbox/v1/forward');
+    expect(first.searchParams.get('auto_complete')).toBe('true');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('falls back to Geocoding v6 when Search Box fails', async () => {
+    const { impl, calls } = scriptedFetch([
+      { body: {}, ok: false, status: 403 },
+      { body: IIexample },
+    ]);
+    const results = await new MapboxGeocoder('sk.test', impl).forward({
+      q: 'sm',
+      limit: 5,
+    });
+
+    expect(new URL(calls[1]).pathname).toBe('/search/geocode/v6/forward');
+    expect(results).toHaveLength(1);
+  });
+
+  it('falls back to Geocoding v6 when Search Box finds nothing', async () => {
+    const { impl, calls } = scriptedFetch([
+      { body: { features: [] } },
+      { body: IIexample },
+    ]);
+    const results = await new MapboxGeocoder('sk.test', impl).forward({
+      q: 'lopez jaena',
+      limit: 5,
+    });
+
+    expect(new URL(calls[1]).pathname).toBe('/search/geocode/v6/forward');
+    expect(results[0].label).toBe('SM City Iloilo');
+  });
+
+  it('fills the remaining slots from Geocoding v6, without duplicates', async () => {
+    // Search Box ranks shops above a street ("Lopez Jaena St Jaro" → five
+    // stores on it); v6 knows the street. A thin Search Box answer gets the
+    // streets after it.
+    const street = {
+      properties: {
+        name: 'Lopez Jaena Street',
+        place_formatted: 'Jaro, Iloilo City',
+        coordinates: { longitude: 122.5631, latitude: 10.7232 },
+      },
+    };
+    const { impl, calls } = scriptedFetch([
+      { body: IIexample },
+      { body: { features: [IIexample.features[0], street] } },
+    ]);
+    const results = await new MapboxGeocoder('sk.test', impl).forward({
+      q: 'lopez jaena',
+      limit: 5,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(results.map((r) => r.label)).toEqual([
+      'SM City Iloilo',
+      'Lopez Jaena Street',
+    ]);
+  });
+
+  it('keeps the Search Box results when the v6 fill fails', async () => {
+    const { impl } = scriptedFetch([
+      { body: IIexample },
+      { body: {}, ok: false, status: 500 },
+    ]);
+    const results = await new MapboxGeocoder('sk.test', impl).forward({
+      q: 'sm',
+      limit: 5,
+    });
+
+    expect(results.map((r) => r.label)).toEqual(['SM City Iloilo']);
+  });
+
+  it('never returns more than the limit', async () => {
+    const many = {
+      features: Array.from({ length: 6 }, (_, i) => ({
+        properties: {
+          name: `Place ${i}`,
+          coordinates: { longitude: 122 + i / 100, latitude: 10 },
+        },
+      })),
+    };
+    const { impl, calls } = fakeFetch(many);
+    const results = await new MapboxGeocoder('sk.test', impl).forward({
+      q: 'place',
+      limit: 5,
+    });
+
+    expect(results).toHaveLength(5);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('pins the fallback to the Philippines and the same proximity', async () => {
+    const { impl, calls } = scriptedFetch([
+      { body: { features: [] } },
+      { body: IIexample },
+    ]);
+    await new MapboxGeocoder('sk.test', impl).forward({
+      q: 'jaro',
+      limit: 5,
+      proximity: { lat: 10.7145, lng: 122.5996 },
+    });
+
+    const fallback = new URL(calls[1]).searchParams;
+    expect(fallback.get('country')).toBe('ph');
+    expect(fallback.get('proximity')).toBe('122.5996,10.7145');
+  });
+});
+
 describe('MapboxGeocoder.reverse', () => {
   it('sends latitude/longitude and country=ph', async () => {
     const { impl, calls } = fakeFetch(IIexample);
@@ -150,6 +289,9 @@ describe('MapboxGeocoder.reverse', () => {
       lng: 122.5474,
     });
 
+    // Reverse stays on Geocoding v6: a pin wants the street address under
+    // it, which is what an address geocoder is for.
+    expect(new URL(calls[0]).pathname).toBe('/search/geocode/v6/reverse');
     const params = new URL(calls[0]).searchParams;
     expect(params.get('latitude')).toBe('10.7128');
     expect(params.get('longitude')).toBe('122.5474');
