@@ -190,6 +190,50 @@ describe('OrdersService', () => {
       );
     });
 
+    // The size and the parcel photo used to stop at the customer's phone:
+    // the size only as words in the notes, the photo not at all — the body
+    // never carried it, and the rider's card reads it from errand_payload.
+    it('placeCourierOrder stores the declared package size and parcel photo', async () => {
+      prisma.orders.create.mockResolvedValue({ id: 'order-2' });
+
+      await service.placeCourierOrder('cust-1', {
+        pickup_lat: 10,
+        pickup_lng: 122,
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
+        package_size: 'large',
+        errand_payload: { item_photo_url: 'https://cdn.example/p.jpg' },
+      });
+
+      expect(prisma.orders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            package_size: 'large',
+            errand_payload: { item_photo_url: 'https://cdn.example/p.jpg' },
+          }) as Record<string, unknown>,
+        }),
+      );
+    });
+
+    it('placeRideOrder ignores courier-only fields', async () => {
+      prisma.orders.create.mockResolvedValue({ id: 'order-3' });
+
+      await service.placeRideOrder('cust-1', {
+        pickup_lat: 10,
+        pickup_lng: 122,
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
+        package_size: 'large',
+        errand_payload: { item_photo_url: 'https://cdn.example/p.jpg' },
+      });
+
+      const [[arg]] = prisma.orders.create.mock.calls as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data).not.toHaveProperty('package_size');
+      expect(arg.data).not.toHaveProperty('errand_payload');
+    });
+
     it('placeRideOrder creates with status ready_for_pickup', async () => {
       prisma.orders.create.mockResolvedValue({
         id: 'order-3',

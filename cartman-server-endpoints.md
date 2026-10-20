@@ -132,7 +132,10 @@ delivery_fee, discount, total, delivery_payout, created_at, items[], stops[]`.
 
 **pickup/dropoff body** (courier + ride):
 `{pickup_lat, pickup_lng, pickup_text, dropoff_lat, dropoff_lng, dropoff_text,
-notes}`.
+notes}`. Courier only, ignored by ride: `recipient_name`, `recipient_phone`,
+`package_size` (`'small' | 'medium' | 'large'`, the largest package declared →
+`orders.package_size`; does not change the fare) and `errand_payload`
+(`{item_photo_url}`, the parcel photo the rider's job card shows).
 
 **`delivery_failed` is deliberately not a route here.** The rider app reports a
 failed delivery by calling the `rider_report_delivery_failed` SECURITY DEFINER
