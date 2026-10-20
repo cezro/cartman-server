@@ -394,6 +394,12 @@ model orders {
   // src/orders/vehicle.ts); a trigger enforces it for every other writer.
   required_vehicle String?
 
+  // The largest package size a courier customer declared: 'small' | 'medium' |
+  // 'large' (CHECK-constrained in the database, cartman-mobile
+  // 20261012000100). Null on every other order type. Display only for now —
+  // the fare stays pure distance.
+  package_size String?
+
   created_at DateTime @default(now()) @db.Timestamptz()
   updated_at DateTime @default(now()) @db.Timestamptz()
 

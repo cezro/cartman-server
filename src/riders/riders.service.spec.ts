@@ -1,5 +1,9 @@
-import { ConflictException } from '@nestjs/common';
-import { RidersService } from './riders.service';
+import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  HISTORY_MAX_WINDOW_DAYS,
+  HISTORY_SINCE_ROW_CEILING,
+  RidersService,
+} from './riders.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 // Google sign-in can't carry `role: 'rider'` through OAuth, so handle_new_user
@@ -163,6 +167,53 @@ describe('RidersService.getDeliveryHistory', () => {
     expect(result[0].total).toBe(14900);
     expect(typeof result[0].delivery_payout).toBe('number');
     expect(result[0].order_items[0].unit_price).toBe(15000);
+  });
+
+  it('caps the plain list at the 20 most recent deliveries', async () => {
+    prisma.orders.findMany.mockResolvedValue([]);
+
+    await service.getDeliveryHistory('rider-1');
+
+    const [[arg]] = prisma.orders.findMany.mock.calls as [
+      [{ where: Record<string, unknown>; take: number }],
+    ];
+    expect(arg.take).toBe(20);
+    expect(arg.where).not.toHaveProperty('OR');
+  });
+
+  // The Earnings "Last 7 days" chart sums this list. A rider with more than
+  // 20 deliveries in the week got a short total from the capped form.
+  it('with since, returns every delivery earned in the window, not 20', async () => {
+    prisma.orders.findMany.mockResolvedValue([]);
+    const since = new Date(Date.now() - 6 * 86_400_000);
+
+    await service.getDeliveryHistory('rider-1', since);
+
+    const [[arg]] = prisma.orders.findMany.mock.calls as [
+      [{ where: Record<string, unknown>; take: number }],
+    ];
+    expect(arg.take).toBe(HISTORY_SINCE_ROW_CEILING);
+    expect(arg.where).toEqual({
+      assigned_rider_id: 'rider-1',
+      status: 'delivered',
+      // Earned-day rule, same as the app's weeklyPayouts: delivered_at, or
+      // created_at for rows that predate the stamp.
+      OR: [
+        { delivered_at: { gte: since } },
+        { delivered_at: null, created_at: { gte: since } },
+      ],
+    });
+  });
+
+  it('refuses a since older than the window so the route cannot dump all history', async () => {
+    const tooOld = new Date(
+      Date.now() - (HISTORY_MAX_WINDOW_DAYS + 1) * 86_400_000,
+    );
+
+    await expect(
+      service.getDeliveryHistory('rider-1', tooOld),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.orders.findMany).not.toHaveBeenCalled();
   });
 });
 

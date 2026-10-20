@@ -110,7 +110,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC). Response embeds `order_items` + `order_stops` (boots the active screen) |
 | `PATCH /orders/:id/status` | rider | `{status}` → order JSON (Prisma twin of `advance_order_status`: one step forward only; `delivered` stamps `delivered_at`, writes the ledger rows and adds one to `riders.total_trips`, once per order) |
 | `POST /riders/onboard` | rider | `{vehicle?, plate_no?, phone?}` → `riders` row. Promotes the **caller** (id from the JWT, never the body) to `role='rider'` and creates their `riders` row. **The only riders route with no `@Roles`** — see the auth model above |
-| `GET /riders/me/history` | rider | → `[order JSON]`, delivered, caller-scoped |
+| `GET /riders/me/history` | rider | `?since?` → `[order JSON]`, delivered, caller-scoped, newest first. Without `since`: the 20 most recent. With `since` (ISO-8601, at most 31 days back, else **400**): every delivery earned on or after it (`delivered_at`, else `created_at`) — use this for anything that sums a period |
 | `PATCH /riders/me/duty` | rider | `{is_active: bool}` → `{}` (`set_duty` RPC) |
 | `GET /ledger/me/wallet` | rider | → `{balance: string}` (centavos; `rider_net_cash`) |
 | `GET /ledger/me/earnings-today` | rider | → `{earnings_today: number}` (centavos) |
@@ -132,7 +132,10 @@ delivery_fee, discount, total, delivery_payout, created_at, items[], stops[]`.
 
 **pickup/dropoff body** (courier + ride):
 `{pickup_lat, pickup_lng, pickup_text, dropoff_lat, dropoff_lng, dropoff_text,
-notes}`.
+notes}`. Courier only, ignored by ride: `recipient_name`, `recipient_phone`,
+`package_size` (`'small' | 'medium' | 'large'`, the largest package declared →
+`orders.package_size`; does not change the fare) and `errand_payload`
+(`{item_photo_url}`, the parcel photo the rider's job card shows).
 
 **`delivery_failed` is deliberately not a route here.** The rider app reports a
 failed delivery by calling the `rider_report_delivery_failed` SECURITY DEFINER
@@ -171,7 +174,8 @@ swallows every error to `[]`/`null` for the same reason, and short-circuits
 queries under 3 characters without a request.
 
 Tiles deliberately do **not** go through here — dozens of requests per map pan,
-latency-sensitive, and the app's basemap (CARTO) needs no key at all.
+latency-sensitive, and the app's basemap (Mapbox) uses a public `pk.*`
+token that is safe to ship in the APK.
 
 ---
 

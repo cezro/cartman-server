@@ -1,6 +1,16 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { serializeOrder } from '../orders/serialize-order';
+
+/** How far back `GET /riders/me/history?since=` may reach. */
+export const HISTORY_MAX_WINDOW_DAYS = 31;
+
+/** Row backstop for the `since` form of the history query. */
+export const HISTORY_SINCE_ROW_CEILING = 1000;
 
 @Injectable()
 export class RidersService {
@@ -113,11 +123,43 @@ export class RidersService {
     });
   }
 
-  async getDeliveryHistory(riderId: string) {
+  /**
+   * A rider's delivered orders, newest first.
+   *
+   * Without [since]: the 20 most recent, for the history lists. With it:
+   * every delivery earned on or after [since], for anything that sums or
+   * counts a period — summing the capped list undercounts a busy rider. A
+   * delivery counts on the day it was earned (`delivered_at`), falling back to
+   * `created_at` for rows that predate the stamp, which is the same rule the
+   * rider app's `weeklyPayouts` applies to the rows it gets back.
+   *
+   * The window is bounded so the uncapped form cannot be turned into a dump of
+   * a rider's whole history; [HISTORY_SINCE_ROW_CEILING] is a backstop, not a
+   * page size — a week of deliveries never gets near it.
+   */
+  async getDeliveryHistory(riderId: string, since?: Date) {
+    if (since) {
+      const earliest = Date.now() - HISTORY_MAX_WINDOW_DAYS * 86_400_000;
+      if (since.getTime() < earliest) {
+        throw new BadRequestException(
+          `since must be within the last ${HISTORY_MAX_WINDOW_DAYS} days`,
+        );
+      }
+    }
+
     const orders = await this.prisma.orders.findMany({
-      where: { assigned_rider_id: riderId, status: 'delivered' },
+      where: {
+        assigned_rider_id: riderId,
+        status: 'delivered',
+        ...(since && {
+          OR: [
+            { delivered_at: { gte: since } },
+            { delivered_at: null, created_at: { gte: since } },
+          ],
+        }),
+      },
       orderBy: { updated_at: 'desc' },
-      take: 20,
+      take: since ? HISTORY_SINCE_ROW_CEILING : 20,
       include: {
         order_items: true,
         order_stops: true,

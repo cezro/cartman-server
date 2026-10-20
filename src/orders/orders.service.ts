@@ -18,7 +18,10 @@ import { serializeOrder } from './serialize-order';
 import { claimableBy, vehicleClass } from './vehicle';
 import { resolveSelectedModifiers } from './modifiers';
 import { formatPeso } from '../common/peso';
-import type { PlaceMerchantOrderDto } from './dto/place-order.dto';
+import type {
+  PlaceMerchantOrderDto,
+  PlacePickupDropoffOrderDto,
+} from './dto/place-order.dto';
 
 // -₱2,000 in centavos — mirrors LedgerService's LOCK_FLOOR / accept_order() RPC.
 export const WALLET_LOCK_FLOOR = -200_000n;
@@ -336,7 +339,10 @@ export class OrdersService {
     });
   }
 
-  async placeCourierOrder(customerId: string, data: any) {
+  async placeCourierOrder(
+    customerId: string,
+    data: PlacePickupDropoffOrderDto,
+  ) {
     const {
       pickup_lat,
       pickup_lng,
@@ -347,6 +353,8 @@ export class OrdersService {
       notes,
       recipient_name,
       recipient_phone,
+      package_size,
+      errand_payload,
     } = data;
 
     if (!pickup_lat || !pickup_lng || !dropoff_lat || !dropoff_lng) {
@@ -386,6 +394,12 @@ export class OrdersService {
           notes,
           recipient_name,
           recipient_phone,
+          package_size,
+          // Absent or null leaves the column null; the DTO has already
+          // checked it is an object.
+          errand_payload: (errand_payload ?? undefined) as
+            | Prisma.InputJsonObject
+            | undefined,
         },
       });
       return this.serializeOrder(order);

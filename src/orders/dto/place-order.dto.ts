@@ -155,6 +155,20 @@ export class PlacePickupDropoffOrderDto {
   @IsOptional()
   @IsString()
   recipient_phone?: string;
+
+  // Courier only, like the recipient: the largest package size declared in
+  // the booking, stored as orders.package_size for the rider. Does not change
+  // the fare.
+  @IsOptional()
+  @IsIn(['small', 'medium', 'large'])
+  package_size?: 'small' | 'medium' | 'large';
+
+  // Courier only: `{item_photo_url}`, the parcel photo the customer attaches
+  // so the rider can recognise it at pickup. Same column and shape-free
+  // contract as the errand body's errand_payload.
+  @IsOptional()
+  @IsObject()
+  errand_payload?: Record<string, unknown> | null;
 }
 
 /** One stop in a multi-stop order (cartman-server-endpoints.md §1). */
