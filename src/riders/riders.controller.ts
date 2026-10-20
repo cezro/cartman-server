@@ -5,6 +5,7 @@ import {
   Patch,
   Body,
   Param,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { RidersService } from './riders.service';
@@ -16,6 +17,7 @@ import { CreateRiderDto } from './dto/create-rider.dto';
 import { OnboardRiderDto } from './dto/onboard-rider.dto';
 import { ToggleDutyDto } from './dto/toggle-duty.dto';
 import { LogTelemetryDto } from './dto/log-telemetry.dto';
+import { DeliveryHistoryQueryDto } from './dto/delivery-history-query.dto';
 
 @Controller('riders')
 @UseGuards(JwtAuthGuard)
@@ -78,7 +80,13 @@ export class RidersController {
 
   @Get('me/history')
   @Roles('rider')
-  getDeliveryHistory(@CurrentUser() user: AuthenticatedUser) {
-    return this.ridersService.getDeliveryHistory(user.id);
+  getDeliveryHistory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: DeliveryHistoryQueryDto,
+  ) {
+    return this.ridersService.getDeliveryHistory(
+      user.id,
+      query.since ? new Date(query.since) : undefined,
+    );
   }
 }
