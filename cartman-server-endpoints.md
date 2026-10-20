@@ -95,7 +95,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `POST /auth/send-otp` | customer | `{phone}` → `{}` (429 rate-limit, 502 SMS fail) |
 | `POST /auth/verify-otp` | customer | `{phone, code}` → `{verified: bool}`; on true, sets `profiles.phone_verified`. **409** when the number is already verified on another account (`profiles.phone` is UNIQUE) — the code was right, so clients must not treat it as a bad code. The consume and the profile write are one transaction: a failure leaves the code unspent and still valid (BUG-013) |
 | `GET /auth/me` | both apps | → `profiles` row + nested `rider` relation |
-| `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}], notes?, dropoff_instruction?, dropoff_note?, dropoff_lat?, dropoff_lng?, dropoff_text?}` → order JSON. Drop-off resolves per-order when coords are sent (I2), else from the customer's **default saved address**; 400 when they have none, since the order would be undeliverable. `dropoff_instruction` omitted ⇒ DB default `hand_to_me` (I3b) |
+| `POST /orders/food` | customer | `{merchant_id, items:[{menu_item_id, qty}], notes?, dropoff_instruction?, dropoff_note?, dropoff_lat?, dropoff_lng?, dropoff_text?}` → order JSON. Drop-off resolves per-order when coords are sent (I2), else from the customer's **default saved address**; 400 when they have none, since the order would be undeliverable. `dropoff_instruction` omitted ⇒ DB default `hand_to_me` (I3b). A refusal the customer can act on is **409** with a sentence the app shows as-is: the store is closed (`is_open = false`), paused (`busy_until` ahead), the item subtotal (options in, delivery fee out) is under `min_order`, or a chosen option is no longer on the menu. Never 400 for these: the app retries a 400 with the options stripped |
 | `POST /orders/grocery` | customer | same body and drop-off rules as `/orders/food` → order JSON |
 | `POST /orders/errand` | customer | `{errand_payload, notes, dropoff_lat, dropoff_lng, dropoff_text?}` → order JSON (400 without drop-off coords — a pabili is unfulfillable with nowhere to deliver) |
 | `POST /orders/courier` | customer | pickup/dropoff body (below) → order JSON |
@@ -108,7 +108,7 @@ string for `balance`, `cart_points`, `wallet_centavos`.
 | `PATCH /orders/:id/reject` | merchant panel | `{reason?}` → order JSON (`pending\|preparing → canceled`); 409 once a rider is assigned. Done — see §2 |
 | `GET /orders/feed` | rider | → `[{order: <order JSON>, score, distance_km, expires_at}]`; 403 when off-duty / locked-out (client shows `message`). `expires_at` = `created_at + FEED_ACCEPT_WINDOW_MINUTES` (default 5) — R-4.1 display urgency only, expired entries stay claimable. Entries embed `order_items` + `order_stops` |
 | `PATCH /orders/:id/claim` | rider | → `{queued?: bool}`; atomic first-writer-wins (`accept_order` RPC). Response embeds `order_items` + `order_stops` (boots the active screen) |
-| `PATCH /orders/:id/status` | rider | `{status}` → order JSON (`advance_order_status` RPC) |
+| `PATCH /orders/:id/status` | rider | `{status}` → order JSON (Prisma twin of `advance_order_status`: one step forward only; `delivered` stamps `delivered_at`, writes the ledger rows and adds one to `riders.total_trips`, once per order) |
 | `POST /riders/onboard` | rider | `{vehicle?, plate_no?, phone?}` → `riders` row. Promotes the **caller** (id from the JWT, never the body) to `role='rider'` and creates their `riders` row. **The only riders route with no `@Roles`** — see the auth model above |
 | `GET /riders/me/history` | rider | → `[order JSON]`, delivered, caller-scoped |
 | `PATCH /riders/me/duty` | rider | `{is_active: bool}` → `{}` (`set_duty` RPC) |
@@ -300,7 +300,12 @@ The customer cancel path exists but doesn't attribute the cancellation.
 > **Built:** `StorageService.resolveUploadTarget` — customer **and rider**
 > uploads are forced to `avatars/{auth.uid()}/{basename}` in the default
 > bucket (the key is rebuilt from the basename, so `../`, another uid, or a
-> caller-chosen bucket cannot escape the prefix), `image/*` only, 5 MB cap.
+> caller-chosen bucket cannot escape the prefix), JPEG/PNG/WebP only, 5 MB cap.
+> (Narrowed from `image/*` on 2026-10-20: the default bucket is public, and an
+> SVG is an image that can carry script.) The default bucket, `cartman-assets`,
+> is created by cartman-mobile `20261020130000_cartman_assets_bucket`; before
+> it, production had no such bucket and every upload answered 500 "Bucket not
+> found" (O1 in `GO-LIVE-IDE-SESSION.md`).
 > Response still `{path, publicUrl}`, 201.
 >
 > **Merchant scope — built 2026-09-28** (`server-handoff.md` §12, for the
@@ -308,7 +313,7 @@ The customer cancel path exists but doesn't attribute the cancellation.
 > `path` must be exactly `stores/{merchant_id}/{name}` or
 > `menu/{merchant_id}/{name}`, where `merchant_users` links the caller to
 > `{merchant_id}`; anything else — another store, another folder, a non-uuid
-> id, a missing name, extra segments — is **403**. Same `image/*` + 5 MB limits
+> id, a missing name, extra segments — is **403**. Same JPEG/PNG/WebP + 5 MB limits
 > as customers (**400**). The bucket is forced to the default: uploads run as
 > the service role, which storage policies do not stop, so a caller-chosen
 > bucket would reach the private `merchant-docs` bucket. **Only admin keeps a
@@ -405,8 +410,8 @@ Remaining follow-ups (2026-07-18 — client flips and DB parity are done):
 > **409**; neither score → **400**; one rating per order — the
 > `order_ratings.order_id` UNIQUE is the atomic gate, so a re-rate
 > (including a concurrent double-submit) surfaces as P2002 → **409**
-> "Order already rated". The insert and the **`merchants.rating` /
-> `riders.rating` recompute (`round(avg(stars), 2)` over non-null scores,
+> "Order already rated". The insert and the **`merchants.rating` +
+> `merchants.rating_count` / `riders.rating` recompute (`round(avg(stars), 2)` over non-null scores,
 > coalesce 0 / 5.0) run in one transaction**; a merchant-less order stores
 > `merchant_id null`, so a `merchant_stars` sent for one is stored inert
 > and never feeds any merchant aggregate (RPC parity — the RPC doesn't
