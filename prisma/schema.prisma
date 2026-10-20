@@ -218,7 +218,11 @@ model merchants {
   name            String
   category        String    @default("")
   rating          Decimal   @default(0)
-  delivery_fee    BigInt    @default(0)
+  // ₱49, and the rider's payout on a food or grocery order is the same
+  // figure. Was 0, so every store onboarded through the panel delivered free
+  // and paid its riders nothing (B1). Mirrors cartman-mobile
+  // 20261020130100_merchant_delivery_fee_default.sql.
+  delivery_fee    BigInt    @default(4900)
   min_order       BigInt    @default(0)
   eta_minutes     Int       @default(0)
   is_open         Boolean   @default(true)
