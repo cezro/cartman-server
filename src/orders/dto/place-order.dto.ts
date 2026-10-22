@@ -87,6 +87,11 @@ export class PlaceMerchantOrderDto {
   @IsOptional()
   @IsString()
   dropoff_text?: string;
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /** Body for POST /orders/errand. */
@@ -117,6 +122,11 @@ export class PlaceErrandOrderDto {
   @IsOptional()
   @IsString()
   dropoff_text?: string;
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /** Body for POST /orders/courier and POST /orders/ride. */
@@ -177,6 +187,11 @@ export class PlacePickupDropoffOrderDto {
   @IsOptional()
   @IsIn(['motorcycle', 'tricycle'])
   required_vehicle?: 'motorcycle' | 'tricycle';
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /** One stop in a multi-stop order (cartman-server-endpoints.md §1). */
@@ -229,6 +244,11 @@ export class PlaceMultiStopOrderDto {
   @IsOptional()
   @IsIn(['cod'], { message: 'Only cash on delivery is available right now.' })
   payment?: 'cod';
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /**

@@ -99,6 +99,52 @@ export class OrdersService {
     return serializeOrder(order);
   }
 
+  /**
+   * Runs [place] once per (customer, client_order_id).
+   *
+   * A placement whose response is lost reads on the phone as a failure, and
+   * the customer retries with the basket intact — while the first request had
+   * already committed. The app sends the same key on every retry of one
+   * attempt, so a repeat returns the order that exists instead of creating a
+   * second COD order. The partial unique index on (customer_id,
+   * client_order_id) settles two identical requests racing each other: the
+   * loser's insert fails P2002 and it returns the winner's row.
+   *
+   * No key (an older app build) places exactly as before.
+   */
+  async placeOnce<T>(
+    customerId: string,
+    clientOrderId: string | undefined,
+    place: () => Promise<T>,
+  ): Promise<T | ReturnType<OrdersService['serializeOrder']>> {
+    if (!clientOrderId) return place();
+    const existing = await this.findByClientOrderId(customerId, clientOrderId);
+    if (existing) return existing;
+    try {
+      return await place();
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const winner = await this.findByClientOrderId(
+          customerId,
+          clientOrderId,
+        );
+        if (winner) return winner;
+      }
+      throw err;
+    }
+  }
+
+  private async findByClientOrderId(customerId: string, clientOrderId: string) {
+    const order = await this.prisma.orders.findFirst({
+      where: { customer_id: customerId, client_order_id: clientOrderId },
+      include: { order_items: true, order_stops: true },
+    });
+    return order ? this.serializeOrder(order) : null;
+  }
+
   async placeFoodOrder(customerId: string, data: PlaceMerchantOrderDto) {
     return this.placeMerchantOrder(customerId, data, order_type.food);
   }
@@ -275,6 +321,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           merchant_id,
           merchant_name: merchant.name,
           type,
@@ -330,6 +377,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.errand,
           // Errand/courier/ride have no merchant prep step, so there is no
           // "pending -> preparing -> ready" advance to wait on; they are
@@ -390,6 +438,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.pickup_delivery,
           // No merchant prep step for courier orders — born ready_for_pickup
           // so riders can claim immediately (see placeErrandOrder comment).
@@ -451,6 +500,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.ride,
           // No merchant prep step for ride orders — born ready_for_pickup
           // so riders can claim immediately (see placeErrandOrder comment).
@@ -488,6 +538,7 @@ export class OrdersService {
       }>;
       notes?: string;
       payment?: payment_method;
+      client_order_id?: string;
     },
   ) {
     const { stops, notes, payment } = data;
@@ -523,6 +574,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.multi_stop,
           // Born ready_for_pickup like every other non-merchant order type
           // (see placeErrandOrder) — there is no merchant prep step, and a
