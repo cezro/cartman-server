@@ -1613,7 +1613,9 @@ describe('OrdersService', () => {
       });
       expect(prisma.orders.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'order-1' },
+          // The source status is checked in the write, so a cancel landing
+          // after the read cannot be overwritten.
+          where: { id: 'order-1', status: order_status.pending },
           data: { status: order_status.preparing },
         }),
       );
@@ -1688,7 +1690,7 @@ describe('OrdersService', () => {
 
       expect(prisma.orders.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'order-1' },
+          where: { id: 'order-1', status: order_status.preparing },
           data: { status: order_status.ready_for_pickup },
         }),
       );
@@ -1706,6 +1708,30 @@ describe('OrdersService', () => {
         service.merchantMarkReady('order-1', merchantActor),
       ).rejects.toThrow(ConflictException);
       expect(prisma.orders.update).not.toHaveBeenCalled();
+    });
+  });
+
+  // srv-orders-09: the read is not a lock. A cancel between it and the write
+  // makes the guarded write match no row, which must read as a 409, not a 500
+  // and not a revived order.
+  describe('a status write that loses a race answers 409', () => {
+    it('merchantAccept after a concurrent cancel', async () => {
+      prisma.orders.findUnique.mockResolvedValue({
+        id: 'order-1',
+        status: order_status.pending,
+        merchant_id: 'merchant-1',
+      });
+      prisma.merchant_users.findFirst.mockResolvedValue({ user_id: 'user-1' });
+      prisma.orders.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError('No record found', {
+          code: 'P2025',
+          clientVersion: 'test',
+        }),
+      );
+
+      await expect(
+        service.merchantAccept('order-1', { id: 'user-1', role: 'merchant' }),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
   });
 

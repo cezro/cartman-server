@@ -695,11 +695,40 @@ export class OrdersService {
     if (order.status !== order_status.pending) {
       throw new ConflictException('Order can no longer be accepted');
     }
-    const updated = await this.prisma.orders.update({
-      where: { id: orderId },
-      data: { status: order_status.preparing },
-    });
+    // The status is re-checked in the write itself: the read above is not a
+    // lock, and a customer cancel landing between the two used to be
+    // overwritten — a canceled order revived as `preparing`.
+    const updated = await this.guardedWrite(
+      () =>
+        this.prisma.orders.update({
+          where: { id: orderId, status: order_status.pending },
+          data: { status: order_status.preparing },
+        }),
+      'Order can no longer be accepted',
+    );
     return this.serializeOrder(updated);
+  }
+
+  /**
+   * Runs a status write whose `where` names the status it moves from, and
+   * turns "no row matched" (P2025 — the order changed since it was read) into
+   * the same 409 the pre-check gives, instead of a 500.
+   */
+  private async guardedWrite<T>(
+    write: () => Promise<T>,
+    conflict: string,
+  ): Promise<T> {
+    try {
+      return await write();
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2025'
+      ) {
+        throw new ConflictException(conflict);
+      }
+      throw err;
+    }
   }
 
   async merchantMarkReady(
@@ -710,10 +739,14 @@ export class OrdersService {
     if (order.status !== order_status.preparing) {
       throw new ConflictException('Order is not being prepared');
     }
-    const updated = await this.prisma.orders.update({
-      where: { id: orderId },
-      data: { status: order_status.ready_for_pickup },
-    });
+    const updated = await this.guardedWrite(
+      () =>
+        this.prisma.orders.update({
+          where: { id: orderId, status: order_status.preparing },
+          data: { status: order_status.ready_for_pickup },
+        }),
+      'Order is not being prepared',
+    );
     return this.serializeOrder(updated);
   }
 
@@ -879,80 +912,89 @@ export class OrdersService {
       throw new BadRequestException('Illegal status transition');
     }
 
-    const order = await this.prisma.$transaction(async (tx) => {
-      const order = await tx.orders.update({
-        where: {
-          id: orderId,
-          assigned_rider_id: riderId,
-        },
-        data: {
-          status: newStatus,
-          // Parity with advance_order_status, which stamps this on the same
-          // transition. This server reimplements that RPC rather than calling
-          // it, and it had been writing `status` alone — so every delivery
-          // completed through this route left `delivered_at` null and only
-          // deliveries made through the RPC recorded a completion time.
-          // Server clock, set once, never client-supplied.
-          ...(newStatus === order_status.delivered
-            ? { delivered_at: new Date() }
-            : {}),
-        },
-      });
-
-      if (newStatus === order_status.delivered) {
-        // Idempotency guard — load-bearing, do not remove as "dead code":
-        // the transition guard above reads the order OUTSIDE this transaction,
-        // so two concurrent in_transit→delivered requests can BOTH pass it
-        // with the same stale read. Postgres's row lock serializes the two
-        // tx.orders.update calls, and THIS check is what stops the second
-        // transaction from crediting/debiting the rider twice.
-        const alreadyRewarded = await tx.rider_wallet_transactions.findFirst({
-          where: {
-            order_id: order.id,
-            type: 'credit_delivery_reward',
-          },
-        });
-
-        if (!alreadyRewarded) {
-          // Credit rider's delivery share (delivery_payout, not the full
-          // delivery_fee). Inlined here (rather than via LedgerService)
-          // because it must run inside this same transaction — amount is
-          // always positive, sign is inferred from `type` (append-only ledger).
-          await tx.rider_wallet_transactions.create({
+    const order = await this.guardedWrite(
+      () =>
+        this.prisma.$transaction(async (tx) => {
+          const order = await tx.orders.update({
+            where: {
+              id: orderId,
+              assigned_rider_id: riderId,
+              // The status this transition starts from, checked in the write: a
+              // cancel or unassign between the read above and this line used to
+              // be overwritten, reviving the order.
+              status: existing.status,
+            },
             data: {
-              rider_id: riderId,
-              type: 'credit_delivery_reward',
-              amount: BigInt(order.delivery_payout),
-              order_id: order.id,
+              status: newStatus,
+              // Parity with advance_order_status, which stamps this on the same
+              // transition. This server reimplements that RPC rather than calling
+              // it, and it had been writing `status` alone — so every delivery
+              // completed through this route left `delivered_at` null and only
+              // deliveries made through the RPC recorded a completion time.
+              // Server clock, set once, never client-supplied.
+              ...(newStatus === order_status.delivered
+                ? { delivered_at: new Date() }
+                : {}),
             },
           });
 
-          // Debit COD liability — amount is positive; sign comes from txn type
-          if (order.payment === 'cod') {
-            await tx.rider_wallet_transactions.create({
-              data: {
-                rider_id: riderId,
-                type: 'debit_cod_order',
-                amount: BigInt(order.total),
-                order_id: order.id,
-              },
-            });
+          if (newStatus === order_status.delivered) {
+            // Idempotency guard — load-bearing, do not remove as "dead code":
+            // the transition guard above reads the order OUTSIDE this transaction,
+            // so two concurrent in_transit→delivered requests can BOTH pass it
+            // with the same stale read. Postgres's row lock serializes the two
+            // tx.orders.update calls, and THIS check is what stops the second
+            // transaction from crediting/debiting the rider twice.
+            const alreadyRewarded =
+              await tx.rider_wallet_transactions.findFirst({
+                where: {
+                  order_id: order.id,
+                  type: 'credit_delivery_reward',
+                },
+              });
+
+            if (!alreadyRewarded) {
+              // Credit rider's delivery share (delivery_payout, not the full
+              // delivery_fee). Inlined here (rather than via LedgerService)
+              // because it must run inside this same transaction — amount is
+              // always positive, sign is inferred from `type` (append-only ledger).
+              await tx.rider_wallet_transactions.create({
+                data: {
+                  rider_id: riderId,
+                  type: 'credit_delivery_reward',
+                  amount: BigInt(order.delivery_payout),
+                  order_id: order.id,
+                },
+              });
+
+              // Debit COD liability — amount is positive; sign comes from txn type
+              if (order.payment === 'cod') {
+                await tx.rider_wallet_transactions.create({
+                  data: {
+                    rider_id: riderId,
+                    type: 'debit_cod_order',
+                    amount: BigInt(order.total),
+                    order_id: order.id,
+                  },
+                });
+              }
+
+              // S10. advance_order_status counts the trip in the same transaction
+              // as the ledger rows; this route did not, so every delivery the
+              // rider app completed left riders.total_trips where it was. Inside
+              // the reward guard, so a concurrent second call counts nothing.
+              // updateMany, like the RPC's plain UPDATE: no row is a no-op.
+              await tx.riders.updateMany({
+                where: { id: riderId },
+                data: { total_trips: { increment: 1 } },
+              });
+            }
           }
 
-          // S10. advance_order_status counts the trip in the same transaction
-          // as the ledger rows; this route did not, so every delivery the
-          // rider app completed left riders.total_trips where it was. Inside
-          // the reward guard, so a concurrent second call counts nothing.
-          // updateMany, like the RPC's plain UPDATE: no row is a no-op.
-          await tx.riders.updateMany({
-            where: { id: riderId },
-            data: { total_trips: { increment: 1 } },
-          });
-        }
-      }
-
-      return order;
-    });
+          return order;
+        }),
+      'This order changed. Refresh and try again.',
+    );
 
     return this.serializeOrder(order);
   }
