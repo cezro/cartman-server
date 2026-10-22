@@ -24,8 +24,13 @@ import {
 export class MerchantsController {
   constructor(private readonly merchantsService: MerchantsService) {}
 
+  // Every write here is admin-only. These routes take the store id from the
+  // URL and never check merchant_users, so a merchant role would let any
+  // store owner create stores or reprice, sell out and delete another store's
+  // menu. Store owners manage their own menu through the panel's member-scoped
+  // RLS and merchant_* RPCs instead; no client calls these routes.
   @Post()
-  @Roles('merchant', 'admin') // Depending on who can create
+  @Roles('admin')
   createMerchant(@Body() data: CreateMerchantDto) {
     return this.merchantsService.createMerchant(data);
   }
@@ -40,7 +45,7 @@ export class MerchantsController {
   }
 
   @Post(':id/menu-items')
-  @Roles('merchant', 'admin')
+  @Roles('admin')
   addMenuItem(@Param('id') id: string, @Body() data: CreateMenuItemDto) {
     return this.merchantsService.addMenuItem(id, data);
   }
@@ -51,7 +56,7 @@ export class MerchantsController {
   }
 
   @Put(':id/menu-items/:itemId')
-  @Roles('merchant', 'admin')
+  @Roles('admin')
   updateMenuItem(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
@@ -61,7 +66,7 @@ export class MerchantsController {
   }
 
   @Patch(':id/menu-items/:itemId/stock')
-  @Roles('merchant', 'admin')
+  @Roles('admin')
   toggleStock(
     @Param('id') id: string,
     @Param('itemId') itemId: string,
@@ -71,7 +76,7 @@ export class MerchantsController {
   }
 
   @Delete(':id/menu-items/:itemId')
-  @Roles('merchant', 'admin')
+  @Roles('admin')
   deleteMenuItem(@Param('id') id: string, @Param('itemId') itemId: string) {
     return this.merchantsService.deleteMenuItem(id, itemId);
   }

@@ -214,10 +214,13 @@ export class PlaceMultiStopOrderDto {
   notes?: string;
 
   // Sent by the client for interface parity with the contract body; the DB
-  // column defaults to cod when omitted.
+  // column defaults to cod when omitted. Cash on delivery is the only method
+  // with a collection path: delivery debits the rider's cash only for cod, so
+  // any other value would make the delivery free while the rider is still
+  // paid. Widen this when a payment provider exists.
   @IsOptional()
-  @IsIn(['cod', 'gcash', 'maya', 'card', 'cart_credits'])
-  payment?: 'cod' | 'gcash' | 'maya' | 'card' | 'cart_credits';
+  @IsIn(['cod'], { message: 'Only cash on delivery is available right now.' })
+  payment?: 'cod';
 }
 
 /**

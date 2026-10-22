@@ -156,6 +156,18 @@ describe('PlaceMultiStopOrderDto', () => {
     expect(errors).toHaveLength(0);
   });
 
+  it.each(['gcash', 'maya', 'card', 'cart_credits'])(
+    "refuses payment '%s' — cash on delivery is the only method with a collection path",
+    async (payment) => {
+      const dto = plainToInstance(PlaceMultiStopOrderDto, {
+        ...validBody,
+        payment,
+      });
+      const errors = await validate(dto);
+      expect(errors.map((e) => e.property)).toContain('payment');
+    },
+  );
+
   it('accepts a body without notes/payment/labels/payloads (all optional)', async () => {
     const dto = plainToInstance(PlaceMultiStopOrderDto, {
       stops: [
