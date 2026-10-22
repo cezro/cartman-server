@@ -1465,6 +1465,37 @@ describe('OrdersService', () => {
       );
       expect(result[0].order_items[0].unit_price).toBe(15000);
     });
+
+    // srv-orders-10: the 20 newest and nothing else, while the Orders tab
+    // said "That's everything." `before` fetches the page after the last one.
+    it('without a cursor is the first page of 20 (older builds unchanged)', async () => {
+      prisma.orders.findMany.mockResolvedValue([]);
+      await service.getHistory('cust-1');
+      expect(prisma.orders.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { customer_id: 'cust-1' },
+          orderBy: { created_at: 'desc' },
+          take: 20,
+        }),
+      );
+    });
+
+    it('pages back from `before`, with an optional limit', async () => {
+      prisma.orders.findMany.mockResolvedValue([]);
+      await service.getHistory('cust-1', {
+        before: '2026-10-01T04:00:00.000Z',
+        limit: 50,
+      });
+      expect(prisma.orders.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            customer_id: 'cust-1',
+            created_at: { lt: new Date('2026-10-01T04:00:00.000Z') },
+          },
+          take: 50,
+        }),
+      );
+    });
   });
 
   describe('2.5 / §4 — customer cancel attribution', () => {

@@ -645,11 +645,20 @@ export class OrdersService {
     );
   }
 
-  async getHistory(customerId: string) {
+  // A page at a time, newest first. It returned the 20 newest and nothing
+  // else, while the Orders tab said "That's everything." — `before` (the last
+  // shown order's created_at) fetches the page after it.
+  async getHistory(
+    customerId: string,
+    query: { before?: string; limit?: number } = {},
+  ) {
     const orders = await this.prisma.orders.findMany({
-      where: { customer_id: customerId },
+      where: {
+        customer_id: customerId,
+        ...(query.before ? { created_at: { lt: new Date(query.before) } } : {}),
+      },
       orderBy: { created_at: 'desc' },
-      take: 20,
+      take: query.limit ?? 20,
       include: {
         merchant: { select: { name: true, image_url: true } },
         order_items: true,

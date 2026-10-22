@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsISO8601,
   ArrayMinSize,
   IsArray,
   IsIn,
@@ -304,4 +305,22 @@ export class UpdateOrderStatusDto {
     | 'picked_up'
     | 'in_transit'
     | 'delivered';
+}
+
+/**
+ * Query for GET /orders/history: newest first, a page at a time. `before` is
+ * the created_at of the last order the app already shows; omitted, it is the
+ * first page — exactly the old behaviour, so older app builds see no change.
+ */
+export class OrderHistoryQueryDto {
+  @IsOptional()
+  @IsISO8601()
+  before?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
 }

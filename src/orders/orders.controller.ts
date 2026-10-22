@@ -19,6 +19,7 @@ import { Roles } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import {
   CancelOrderDto,
+  OrderHistoryQueryDto,
   PlaceMerchantOrderDto,
   PlaceErrandOrderDto,
   PlaceMultiStopOrderDto,
@@ -111,8 +112,11 @@ export class OrdersController {
 
   @Get('history')
   @Roles('customer')
-  getHistory(@CurrentUser() user: AuthenticatedUser) {
-    return this.ordersService.getHistory(user.id);
+  getHistory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: OrderHistoryQueryDto,
+  ) {
+    return this.ordersService.getHistory(user.id, query);
   }
 
   @Patch(':id/cancel')
