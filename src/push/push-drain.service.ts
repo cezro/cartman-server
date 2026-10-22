@@ -93,6 +93,7 @@ export class PushDrainService {
         select: {
           id: true,
           user_id: true,
+          event: true,
           title: true,
           body: true,
           data: true,
@@ -151,6 +152,7 @@ export class PushDrainService {
   /** Turns a thrown send (socket reset, timeout) into the same shape as a 5xx. */
   private async trySend(row: {
     user_id: string;
+    event: string;
     title: string;
     body: string | null;
     data: unknown;
@@ -160,7 +162,13 @@ export class PushDrainService {
         user_id: row.user_id,
         title: row.title,
         body: row.body,
-        data: row.data,
+        // The event name rides in the data payload: the apps route on it
+        // (PushMessage.event — `rider.approved` re-checks approval and opens
+        // the feed). It was dropped here, so that handling never fired.
+        data: {
+          ...(row.data && typeof row.data === 'object' ? row.data : {}),
+          event: row.event,
+        },
       });
     } catch (err) {
       return {

@@ -150,7 +150,17 @@ export class FeedService {
         order: serializeOrder(order),
         score: round4(score),
         distance_km: distanceKm != null ? round4(distanceKm) : null,
-        expires_at: new Date(createdAtMs + this.acceptWindowMs).toISOString(),
+        // From when the order became claimable, not when it was placed: a
+        // food order enters the feed only after the kitchen's prep time, and a
+        // handed-back one keeps its original created_at, so both arrived
+        // already "expired" (a grey "Waiting" chip, no countdown). updated_at
+        // is bumped by the orders trigger on the move to ready_for_pickup and
+        // nothing touches a ready, unassigned row after that. Age scoring
+        // above stays on created_at — the customer's whole wait is the signal.
+        expires_at: new Date(
+          new Date(order.updated_at ?? order.created_at).getTime() +
+            this.acceptWindowMs,
+        ).toISOString(),
         createdAtMs,
       };
     });

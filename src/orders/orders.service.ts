@@ -178,14 +178,20 @@ export class OrdersService {
         const menuItem = await tx.menu_items.findUnique({
           where: { id: item.menu_item_id },
         });
+        // 409 with a sentence, like the closed / paused / minimum refusals:
+        // the customer can act on both, the app shows the message as-is, and a
+        // 400 would make it retry the order with the options stripped. A dish
+        // removed or sold out while the customer sat on checkout lands here.
         if (!menuItem || menuItem.merchant_id !== merchant_id) {
-          throw new BadRequestException(
-            `Invalid menu item ${item.menu_item_id}`,
+          throw new ConflictException(
+            'One of the dishes in your basket is no longer on the menu. ' +
+              'Open your cart to remove it.',
           );
         }
         if (!menuItem.in_stock) {
-          throw new BadRequestException(
-            `Item ${menuItem.name} is out of stock`,
+          throw new ConflictException(
+            `${menuItem.name} just sold out. ` +
+              'Remove it from your cart to place the order.',
           );
         }
 

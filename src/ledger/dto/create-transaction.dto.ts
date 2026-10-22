@@ -1,4 +1,4 @@
-import { IsIn, IsNumber, IsOptional, IsUUID } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsPositive, IsUUID } from 'class-validator';
 import { wallet_txn_type } from '@prisma/client';
 
 const WALLET_TXN_TYPES: wallet_txn_type[] = [
@@ -23,7 +23,11 @@ export class CreateTransactionDto {
   @IsIn(WALLET_TXN_TYPES)
   type!: wallet_txn_type;
 
-  @IsNumber()
+  // Whole, positive centavos. The sign comes from `type`, so a negative
+  // amount would flip it (a "remittance" that deepens a lockout) and a
+  // fractional one is not money the ledger can hold.
+  @IsInt()
+  @IsPositive()
   amount!: number;
 
   @IsOptional()

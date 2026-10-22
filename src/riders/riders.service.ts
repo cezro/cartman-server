@@ -110,11 +110,36 @@ export class RidersService {
   async logTelemetry(riderId: string, locations: any[]) {
     if (!locations || locations.length === 0) return { count: 0 };
 
+    // A fix may only be tagged with an order this rider holds. The customer's
+    // live map and the arrival pushes read the newest fix per order_id with no
+    // rider filter, and the feed hands every rider the ids of open orders — so
+    // an untrusted tag let one rider plant positions on someone else's
+    // delivery. A foreign tag is dropped (the fix keeps flowing untagged)
+    // rather than failing the batch, so a rider whose order was just released
+    // keeps reporting.
+    const tagged = [
+      ...new Set(
+        locations
+          .map((loc) => loc.order_id as string | undefined)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const held = tagged.length
+      ? new Set(
+          (
+            await this.prisma.orders.findMany({
+              where: { id: { in: tagged }, assigned_rider_id: riderId },
+              select: { id: true },
+            })
+          ).map((o) => o.id),
+        )
+      : new Set<string>();
+
     const data = locations.map((loc) => ({
       rider_id: riderId,
       lat: loc.lat,
       lng: loc.lng,
-      order_id: loc.order_id,
+      order_id: loc.order_id && held.has(loc.order_id) ? loc.order_id : null,
       recorded_at: loc.recorded_at ? new Date(loc.recorded_at) : new Date(),
     }));
 

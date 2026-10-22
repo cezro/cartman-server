@@ -276,6 +276,24 @@ describe('FeedService', () => {
       }
     });
 
+    // A food order enters the feed only after the kitchen's prep time; timing
+    // the window from placement made every such card arrive already expired.
+    it('times the window from when the order became claimable (updated_at), not when it was placed', async () => {
+      prisma.orders.findMany.mockResolvedValue([
+        baseOrder({
+          id: 'order-1',
+          created_at: minutesAgo(30),
+          updated_at: minutesAgo(1),
+        }),
+      ]);
+
+      const [entry] = await service.rankedFeed('rider-1');
+
+      const left = new Date(entry.expires_at).getTime() - Date.now();
+      expect(left).toBeGreaterThan(3.5 * 60_000);
+      expect(left).toBeLessThanOrEqual(4 * 60_000 + 1000);
+    });
+
     it('an already-expired order still appears in the feed (the window is urgency, not a lifecycle rule)', async () => {
       prisma.orders.findMany.mockResolvedValue([
         baseOrder({ id: 'old-order', created_at: minutesAgo(45) }),
