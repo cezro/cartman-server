@@ -279,6 +279,13 @@ export class OrdersService {
           delivery_payout,
           total,
           notes,
+          // The store is the pickup. Without these the rider feed had no
+          // distance, the active screen no store pin, and Navigate was hidden
+          // for the whole to-store leg. Snapshotted like merchant_name; a
+          // store with no pin still places, with null coordinates.
+          pickup_lat: merchant.lat ?? undefined,
+          pickup_lng: merchant.lng ?? undefined,
+          pickup_text: merchant.address?.trim() || merchant.name,
           dropoff_lat: resolvedLat,
           dropoff_lng: resolvedLng,
           dropoff_text: resolvedText,
@@ -398,8 +405,7 @@ export class OrdersService {
           // Absent or null leaves the column null; the DTO has already
           // checked it is an object.
           errand_payload: (errand_payload ?? undefined) as
-            | Prisma.InputJsonObject
-            | undefined,
+            Prisma.InputJsonObject | undefined,
         },
       });
       return this.serializeOrder(order);
@@ -416,6 +422,7 @@ export class OrdersService {
       dropoff_text,
       notes,
     } = data;
+    const tricycle = data.required_vehicle === 'tricycle';
 
     if (!pickup_lat || !pickup_lng || !dropoff_lat || !dropoff_lng) {
       throw new BadRequestException(
@@ -426,11 +433,10 @@ export class OrdersService {
     // Reuses the same haversine fare curve as courier (TODO: confirm the
     // intended Pasakay base/per-km rate against the backlog docs — the
     // courier rate is used here as a placeholder, not a confirmed fare).
-    const delivery_fee = this.calcHaversineFare(
-      pickup_lat,
-      pickup_lng,
-      dropoff_lat,
-      dropoff_lng,
+    // A tricycle ride is 1.3× that, as the app quotes it.
+    const delivery_fee = this.fareForDistance(
+      haversineKm(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng),
+      tricycle,
     );
     const delivery_payout = delivery_fee;
 
@@ -454,6 +460,9 @@ export class OrdersService {
           delivery_payout,
           total: delivery_fee,
           notes,
+          // Feed and claim filter on this (claimableBy), so a tricycle ride
+          // is offered to tricycle riders only.
+          required_vehicle: tricycle ? 'tricycle' : undefined,
         },
       });
       return this.serializeOrder(order);
@@ -558,12 +567,24 @@ export class OrdersService {
 
   // Fare curve shared by courier/ride (single leg) and multi-stop (whole
   // route): ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢).
-  private fareForDistance(distanceKm: number): bigint {
-    const BASE = 4000n;
-    const PER_KM = 1200n;
-    const MIN_FEE = 5000n;
-    const raw = BASE + BigInt(Math.round(distanceKm)) * PER_KM;
-    return raw < MIN_FEE ? MIN_FEE : raw;
+  //
+  // The distance part is rounded in centavos, not kilometres — the same
+  // formula as the app's Fare.estimateCentavos and supabase/functions/
+  // fare-calc. Rounding the distance first charged 2.6 km as 3 km, so the
+  // total differed from the quote the customer confirmed.
+  //
+  // `tricycle` applies the 1.3× Pasakay tricycle multiplier to the floored
+  // fare, as Fare.estimateCentavos(tricycle: true) does.
+  private fareForDistance(distanceKm: number, tricycle = false): bigint {
+    const BASE = 4000;
+    const PER_KM = 1200;
+    const MIN_FEE = 5000;
+    const TRICYCLE_MULTIPLIER = 1.3;
+    const raw = BASE + Math.round(PER_KM * distanceKm);
+    const floored = Math.max(raw, MIN_FEE);
+    return BigInt(
+      tricycle ? Math.round(floored * TRICYCLE_MULTIPLIER) : floored,
+    );
   }
 
   async getHistory(customerId: string) {
@@ -895,7 +916,13 @@ export class OrdersService {
         id: orderId,
         customer_id: customerId,
         assigned_rider_id: null,
-        status: { in: [order_status.pending, order_status.ready_for_pickup] },
+        // ready_for_pickup is cancellable only for merchant-less orders,
+        // which are born there (MM-4). A food/grocery order reaches it only
+        // after the store pressed Mark ready — the food is already cooked.
+        OR: [
+          { status: order_status.pending },
+          { status: order_status.ready_for_pickup, merchant_id: null },
+        ],
       },
       data: {
         status: order_status.canceled,

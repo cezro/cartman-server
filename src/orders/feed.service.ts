@@ -98,7 +98,11 @@ export class FeedService {
           ...claimableBy(vehicleClass(vehicle)),
         },
         take: CANDIDATE_LIMIT,
-        orderBy: { created_at: 'asc' },
+        // Newest first. Unclaimed orders never expire, so with `asc` the
+        // window filled with the oldest abandoned bookings and every new order
+        // was crowded out of the feed for good. Ranking still weighs age
+        // inside the window; older orders past it stay claimable by id.
+        orderBy: { created_at: 'desc' },
         // order_stops so multi-stop cards/active screens get the route
         // without a second round trip; serializeOrder passes rows through.
         include: { order_items: true, order_stops: true },

@@ -225,13 +225,13 @@ describe('FeedService', () => {
     );
   });
 
-  it('queries candidates with take 50, orderBy created_at asc, including order_items and order_stops', async () => {
+  it('queries candidates with take 50, orderBy created_at desc (newest window), including order_items and order_stops', async () => {
     await service.rankedFeed('rider-1');
 
     expect(prisma.orders.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         take: 50,
-        orderBy: { created_at: 'asc' },
+        orderBy: { created_at: 'desc' },
         include: expect.objectContaining({
           order_items: true,
           // Multi-stop cards/active screens need the route without a second

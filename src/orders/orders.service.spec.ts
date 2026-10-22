@@ -8,6 +8,7 @@ import { OrdersService } from './orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { order_status, order_type, Prisma } from '@prisma/client';
+import { haversineKm } from './geo';
 
 // Shape of the update() call advanceRiderStatus issues, so mock.calls[0][0]
 // reads as this rather than `any` (same approach as
@@ -256,6 +257,52 @@ describe('OrdersService', () => {
       );
     });
 
+    // The app quotes base + round(per-km × km) on the continuous distance
+    // (Fare.estimateCentavos, supabase/functions/fare-calc). Rounding the
+    // kilometres first charged a different total from the confirmed quote.
+    it('prices a ride on the continuous distance, like the app quote', async () => {
+      prisma.orders.create.mockResolvedValue({ id: 'order-3' });
+      const leg = {
+        pickup_lat: 10,
+        pickup_lng: 122,
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
+      };
+
+      await service.placeRideOrder('cust-1', leg);
+
+      const km = haversineKm(10, 122, 10.1, 122.1);
+      expect(km % 1).not.toBe(0); // the case that used to round
+      const [[arg]] = prisma.orders.create.mock.calls as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data.delivery_fee).toBe(BigInt(4000 + Math.round(1200 * km)));
+      expect(arg.data).not.toHaveProperty('required_vehicle', 'tricycle');
+    });
+
+    // Pasakay's tricycle option: only tricycle riders may take it, and the
+    // fare is the app's 1.3× quote, not the motorcycle fare.
+    it('a tricycle ride is offered to tricycles only and priced at 1.3×', async () => {
+      prisma.orders.create.mockResolvedValue({ id: 'order-3' });
+
+      await service.placeRideOrder('cust-1', {
+        pickup_lat: 10,
+        pickup_lng: 122,
+        dropoff_lat: 10.1,
+        dropoff_lng: 122.1,
+        required_vehicle: 'tricycle',
+      });
+
+      const km = haversineKm(10, 122, 10.1, 122.1);
+      const base = Math.max(4000 + Math.round(1200 * km), 5000);
+      const [[arg]] = prisma.orders.create.mock.calls as [
+        [{ data: Record<string, unknown> }],
+      ];
+      expect(arg.data.required_vehicle).toBe('tricycle');
+      expect(arg.data.delivery_fee).toBe(BigInt(Math.round(base * 1.3)));
+      expect(arg.data.total).toBe(arg.data.delivery_fee);
+    });
+
     it('placeFoodOrder stores the customer note on the order (cart "note for the restaurant")', async () => {
       prisma.merchants.findUnique.mockResolvedValue({
         id: 'm-1',
@@ -363,6 +410,45 @@ describe('OrdersService', () => {
         dropoff_instruction: 'leave_at_door',
         dropoff_note: 'Green gate, second floor',
       });
+    });
+
+    // The store is the pickup: without it the rider feed had no distance,
+    // the active screen no store pin, and Navigate was hidden to the store.
+    it('snapshots the store as the pickup (pin and address)', async () => {
+      merchantAndItem();
+      prisma.merchants.findUnique.mockResolvedValue({
+        id: 'm-1',
+        name: 'Kusina',
+        delivery_fee: 4900n,
+        is_open: true,
+        min_order: 0n,
+        lat: 10.6995,
+        lng: 122.5688,
+        address: ' Iloilo City Proper ',
+      });
+
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+      });
+
+      expect(createdData()).toMatchObject({
+        pickup_lat: 10.6995,
+        pickup_lng: 122.5688,
+        pickup_text: 'Iloilo City Proper',
+      });
+    });
+
+    it('names the store as the pickup when it has no address or pin yet', async () => {
+      merchantAndItem(); // no lat/lng/address on the row
+
+      await service.placeFoodOrder('customer-1', {
+        merchant_id: 'm-1',
+        items: [{ menu_item_id: 'mi-1', qty: 1 }],
+      });
+
+      expect(createdData().pickup_text).toBe('Kusina');
+      expect(createdData().pickup_lat).toBeUndefined();
     });
 
     it('leaves the instruction undefined when the body omits it, so the DB default (hand_to_me) stands', async () => {
@@ -1404,9 +1490,12 @@ describe('OrdersService', () => {
             id: 'order-1',
             customer_id: 'cust-1',
             assigned_rider_id: null,
-            status: {
-              in: [order_status.pending, order_status.ready_for_pickup],
-            },
+            // ready_for_pickup only for merchant-less orders (born there);
+            // a store's order reaches it after Mark ready — already cooked.
+            OR: [
+              { status: order_status.pending },
+              { status: order_status.ready_for_pickup, merchant_id: null },
+            ],
           }) as Record<string, unknown>,
           data: {
             status: order_status.canceled,

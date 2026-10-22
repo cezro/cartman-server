@@ -59,7 +59,12 @@ function makeFakePrisma() {
   const prisma = {
     orders: {
       create: ({ data }: { data: Row }) => {
-        const { order_items, order_stops, ...columns } = data;
+        const { order_items, order_stops, ...given } = data;
+        // Prisma treats an undefined field as "not set" (the column default
+        // stands), so it must not overwrite the defaults below.
+        const columns = Object.fromEntries(
+          Object.entries(given).filter(([, v]) => v !== undefined),
+        );
         const row: Row = {
           id: `order-${++orderSeq}`,
           assigned_rider_id: null,

@@ -169,6 +169,14 @@ export class PlacePickupDropoffOrderDto {
   @IsOptional()
   @IsObject()
   errand_payload?: Record<string, unknown> | null;
+
+  // Ride only: the Pasakay vehicle the customer chose. 'tricycle' is stored as
+  // orders.required_vehicle (so only tricycle riders are offered and can claim
+  // it) and priced at 1.3×, like the app's quote. Absent or 'motorcycle'
+  // leaves the ride open to any rider at the base fare. Courier ignores it.
+  @IsOptional()
+  @IsIn(['motorcycle', 'tricycle'])
+  required_vehicle?: 'motorcycle' | 'tricycle';
 }
 
 /** One stop in a multi-stop order (cartman-server-endpoints.md §1). */
