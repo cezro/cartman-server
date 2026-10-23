@@ -283,3 +283,51 @@ describe('RidersService — provisioning writes no verifications row', () => {
     expect(created.data.is_verified).toBeUndefined();
   });
 });
+
+// The customer's live map and the arrival pushes read the newest fix per
+// order_id with no rider filter, so a tag must name an order the rider holds.
+describe('RidersService.logTelemetry', () => {
+  let service: RidersService;
+  let prisma: {
+    orders: { findMany: jest.Mock };
+    rider_locations: { createMany: jest.Mock };
+  };
+
+  beforeEach(() => {
+    prisma = {
+      orders: { findMany: jest.fn().mockResolvedValue([{ id: 'mine' }]) },
+      rider_locations: {
+        createMany: jest.fn().mockResolvedValue({ count: 3 }),
+      },
+    };
+    service = new RidersService(prisma as unknown as PrismaService);
+  });
+
+  it("keeps the tag on the rider's own order and drops it on anyone else's", async () => {
+    await service.logTelemetry('rider-1', [
+      { lat: 10.7, lng: 122.5, order_id: 'mine' },
+      { lat: 10.7, lng: 122.5, order_id: 'someone-elses' },
+      { lat: 10.7, lng: 122.5 },
+    ]);
+
+    expect(prisma.orders.findMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ['mine', 'someone-elses'] },
+        assigned_rider_id: 'rider-1',
+      },
+      select: { id: true },
+    });
+    const { data } = prisma.rider_locations.createMany.mock.calls[0][0] as {
+      data: Array<{ order_id: string | null; rider_id: string }>;
+    };
+    expect(data.map((d) => d.order_id)).toEqual(['mine', null, null]);
+    // The fixes themselves still land: telemetry keeps flowing.
+    expect(data).toHaveLength(3);
+    expect(data.every((d) => d.rider_id === 'rider-1')).toBe(true);
+  });
+
+  it('skips the ownership lookup when no fix is tagged', async () => {
+    await service.logTelemetry('rider-1', [{ lat: 10.7, lng: 122.5 }]);
+    expect(prisma.orders.findMany).not.toHaveBeenCalled();
+  });
+});

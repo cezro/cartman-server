@@ -20,6 +20,7 @@ describe('PushDrainService', () => {
   const row = (over: Partial<Record<string, unknown>> = {}) => ({
     id: 'o-1',
     user_id: 'u-1',
+    event: 'order.preparing',
     title: 'Order accepted',
     body: 'The store is preparing CT-1.',
     data: { order_id: 'ord-1' },
@@ -68,11 +69,12 @@ describe('PushDrainService', () => {
 
     const result = await service.drain();
 
+    // The event rides in data: the apps route on it (`rider.approved`).
     expect(sender.send).toHaveBeenCalledWith({
       user_id: 'u-1',
       title: 'Order accepted',
       body: 'The store is preparing CT-1.',
-      data: { order_id: 'ord-1' },
+      data: { order_id: 'ord-1', event: 'order.preparing' },
     });
     expect(prisma.push_outbox.update).toHaveBeenCalledWith(
       expect.objectContaining({

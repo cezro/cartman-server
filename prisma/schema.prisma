@@ -394,6 +394,13 @@ model orders {
   // src/orders/vehicle.ts); a trigger enforces it for every other writer.
   required_vehicle String?
 
+  // One order per placement attempt (cust-checkout-15, CartmanPH migration
+  // 20261022000200): the apps send a random key per attempt and reuse it on
+  // retry; OrdersService.placeOnce returns the existing order for a repeated
+  // (customer_id, client_order_id). Partial unique index lives in the
+  // migration (Prisma cannot express `where client_order_id is not null`).
+  client_order_id String? @db.Uuid
+
   // The largest package size a courier customer declared: 'small' | 'medium' |
   // 'large' (CHECK-constrained in the database, cartman-mobile
   // 20261012000100). Null on every other order type. Display only for now —

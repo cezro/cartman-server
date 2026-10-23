@@ -19,6 +19,7 @@ import { Roles } from '../auth/roles.decorator';
 import type { AuthenticatedUser } from '../auth/jwt.strategy';
 import {
   CancelOrderDto,
+  OrderHistoryQueryDto,
   PlaceMerchantOrderDto,
   PlaceErrandOrderDto,
   PlaceMultiStopOrderDto,
@@ -49,7 +50,9 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() data: PlaceMerchantOrderDto,
   ) {
-    return this.ordersService.placeFoodOrder(user.id, data);
+    return this.ordersService.placeOnce(user.id, data.client_order_id, () =>
+      this.ordersService.placeFoodOrder(user.id, data),
+    );
   }
 
   @Post('grocery')
@@ -58,7 +61,9 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() data: PlaceMerchantOrderDto,
   ) {
-    return this.ordersService.placeGroceryOrder(user.id, data);
+    return this.ordersService.placeOnce(user.id, data.client_order_id, () =>
+      this.ordersService.placeGroceryOrder(user.id, data),
+    );
   }
 
   @Post('errand')
@@ -67,7 +72,9 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() data: PlaceErrandOrderDto,
   ) {
-    return this.ordersService.placeErrandOrder(user.id, data);
+    return this.ordersService.placeOnce(user.id, data.client_order_id, () =>
+      this.ordersService.placeErrandOrder(user.id, data),
+    );
   }
 
   @Post('courier')
@@ -76,7 +83,9 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() data: PlacePickupDropoffOrderDto,
   ) {
-    return this.ordersService.placeCourierOrder(user.id, data);
+    return this.ordersService.placeOnce(user.id, data.client_order_id, () =>
+      this.ordersService.placeCourierOrder(user.id, data),
+    );
   }
 
   @Post('ride')
@@ -85,7 +94,9 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() data: PlacePickupDropoffOrderDto,
   ) {
-    return this.ordersService.placeRideOrder(user.id, data);
+    return this.ordersService.placeOnce(user.id, data.client_order_id, () =>
+      this.ordersService.placeRideOrder(user.id, data),
+    );
   }
 
   @Post('multi-stop')
@@ -94,13 +105,18 @@ export class OrdersController {
     @CurrentUser() user: AuthenticatedUser,
     @Body() data: PlaceMultiStopOrderDto,
   ) {
-    return this.ordersService.placeMultiStopOrder(user.id, data);
+    return this.ordersService.placeOnce(user.id, data.client_order_id, () =>
+      this.ordersService.placeMultiStopOrder(user.id, data),
+    );
   }
 
   @Get('history')
   @Roles('customer')
-  getHistory(@CurrentUser() user: AuthenticatedUser) {
-    return this.ordersService.getHistory(user.id);
+  getHistory(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: OrderHistoryQueryDto,
+  ) {
+    return this.ordersService.getHistory(user.id, query);
   }
 
   @Patch(':id/cancel')

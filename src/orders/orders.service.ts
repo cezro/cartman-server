@@ -99,6 +99,52 @@ export class OrdersService {
     return serializeOrder(order);
   }
 
+  /**
+   * Runs [place] once per (customer, client_order_id).
+   *
+   * A placement whose response is lost reads on the phone as a failure, and
+   * the customer retries with the basket intact — while the first request had
+   * already committed. The app sends the same key on every retry of one
+   * attempt, so a repeat returns the order that exists instead of creating a
+   * second COD order. The partial unique index on (customer_id,
+   * client_order_id) settles two identical requests racing each other: the
+   * loser's insert fails P2002 and it returns the winner's row.
+   *
+   * No key (an older app build) places exactly as before.
+   */
+  async placeOnce<T>(
+    customerId: string,
+    clientOrderId: string | undefined,
+    place: () => Promise<T>,
+  ): Promise<T | ReturnType<OrdersService['serializeOrder']>> {
+    if (!clientOrderId) return place();
+    const existing = await this.findByClientOrderId(customerId, clientOrderId);
+    if (existing) return existing;
+    try {
+      return await place();
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        const winner = await this.findByClientOrderId(
+          customerId,
+          clientOrderId,
+        );
+        if (winner) return winner;
+      }
+      throw err;
+    }
+  }
+
+  private async findByClientOrderId(customerId: string, clientOrderId: string) {
+    const order = await this.prisma.orders.findFirst({
+      where: { customer_id: customerId, client_order_id: clientOrderId },
+      include: { order_items: true, order_stops: true },
+    });
+    return order ? this.serializeOrder(order) : null;
+  }
+
   async placeFoodOrder(customerId: string, data: PlaceMerchantOrderDto) {
     return this.placeMerchantOrder(customerId, data, order_type.food);
   }
@@ -178,14 +224,20 @@ export class OrdersService {
         const menuItem = await tx.menu_items.findUnique({
           where: { id: item.menu_item_id },
         });
+        // 409 with a sentence, like the closed / paused / minimum refusals:
+        // the customer can act on both, the app shows the message as-is, and a
+        // 400 would make it retry the order with the options stripped. A dish
+        // removed or sold out while the customer sat on checkout lands here.
         if (!menuItem || menuItem.merchant_id !== merchant_id) {
-          throw new BadRequestException(
-            `Invalid menu item ${item.menu_item_id}`,
+          throw new ConflictException(
+            'One of the dishes in your basket is no longer on the menu. ' +
+              'Open your cart to remove it.',
           );
         }
         if (!menuItem.in_stock) {
-          throw new BadRequestException(
-            `Item ${menuItem.name} is out of stock`,
+          throw new ConflictException(
+            `${menuItem.name} just sold out. ` +
+              'Remove it from your cart to place the order.',
           );
         }
 
@@ -269,6 +321,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           merchant_id,
           merchant_name: merchant.name,
           type,
@@ -279,6 +332,13 @@ export class OrdersService {
           delivery_payout,
           total,
           notes,
+          // The store is the pickup. Without these the rider feed had no
+          // distance, the active screen no store pin, and Navigate was hidden
+          // for the whole to-store leg. Snapshotted like merchant_name; a
+          // store with no pin still places, with null coordinates.
+          pickup_lat: merchant.lat ?? undefined,
+          pickup_lng: merchant.lng ?? undefined,
+          pickup_text: merchant.address?.trim() || merchant.name,
           dropoff_lat: resolvedLat,
           dropoff_lng: resolvedLng,
           dropoff_text: resolvedText,
@@ -317,6 +377,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.errand,
           // Errand/courier/ride have no merchant prep step, so there is no
           // "pending -> preparing -> ready" advance to wait on; they are
@@ -377,6 +438,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.pickup_delivery,
           // No merchant prep step for courier orders — born ready_for_pickup
           // so riders can claim immediately (see placeErrandOrder comment).
@@ -398,8 +460,7 @@ export class OrdersService {
           // Absent or null leaves the column null; the DTO has already
           // checked it is an object.
           errand_payload: (errand_payload ?? undefined) as
-            | Prisma.InputJsonObject
-            | undefined,
+            Prisma.InputJsonObject | undefined,
         },
       });
       return this.serializeOrder(order);
@@ -416,6 +477,7 @@ export class OrdersService {
       dropoff_text,
       notes,
     } = data;
+    const tricycle = data.required_vehicle === 'tricycle';
 
     if (!pickup_lat || !pickup_lng || !dropoff_lat || !dropoff_lng) {
       throw new BadRequestException(
@@ -426,11 +488,10 @@ export class OrdersService {
     // Reuses the same haversine fare curve as courier (TODO: confirm the
     // intended Pasakay base/per-km rate against the backlog docs — the
     // courier rate is used here as a placeholder, not a confirmed fare).
-    const delivery_fee = this.calcHaversineFare(
-      pickup_lat,
-      pickup_lng,
-      dropoff_lat,
-      dropoff_lng,
+    // A tricycle ride is 1.3× that, as the app quotes it.
+    const delivery_fee = this.fareForDistance(
+      haversineKm(pickup_lat, pickup_lng, dropoff_lat, dropoff_lng),
+      tricycle,
     );
     const delivery_payout = delivery_fee;
 
@@ -439,6 +500,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.ride,
           // No merchant prep step for ride orders — born ready_for_pickup
           // so riders can claim immediately (see placeErrandOrder comment).
@@ -454,6 +516,9 @@ export class OrdersService {
           delivery_payout,
           total: delivery_fee,
           notes,
+          // Feed and claim filter on this (claimableBy), so a tricycle ride
+          // is offered to tricycle riders only.
+          required_vehicle: tricycle ? 'tricycle' : undefined,
         },
       });
       return this.serializeOrder(order);
@@ -473,6 +538,7 @@ export class OrdersService {
       }>;
       notes?: string;
       payment?: payment_method;
+      client_order_id?: string;
     },
   ) {
     const { stops, notes, payment } = data;
@@ -508,6 +574,7 @@ export class OrdersService {
       const order = await tx.orders.create({
         data: {
           customer_id: customerId,
+          client_order_id: data.client_order_id,
           type: order_type.multi_stop,
           // Born ready_for_pickup like every other non-merchant order type
           // (see placeErrandOrder) — there is no merchant prep step, and a
@@ -558,19 +625,40 @@ export class OrdersService {
 
   // Fare curve shared by courier/ride (single leg) and multi-stop (whole
   // route): ₱40 base (4000¢) + ₱12/km (1200¢/km), minimum ₱50 (5000¢).
-  private fareForDistance(distanceKm: number): bigint {
-    const BASE = 4000n;
-    const PER_KM = 1200n;
-    const MIN_FEE = 5000n;
-    const raw = BASE + BigInt(Math.round(distanceKm)) * PER_KM;
-    return raw < MIN_FEE ? MIN_FEE : raw;
+  //
+  // The distance part is rounded in centavos, not kilometres — the same
+  // formula as the app's Fare.estimateCentavos and supabase/functions/
+  // fare-calc. Rounding the distance first charged 2.6 km as 3 km, so the
+  // total differed from the quote the customer confirmed.
+  //
+  // `tricycle` applies the 1.3× Pasakay tricycle multiplier to the floored
+  // fare, as Fare.estimateCentavos(tricycle: true) does.
+  private fareForDistance(distanceKm: number, tricycle = false): bigint {
+    const BASE = 4000;
+    const PER_KM = 1200;
+    const MIN_FEE = 5000;
+    const TRICYCLE_MULTIPLIER = 1.3;
+    const raw = BASE + Math.round(PER_KM * distanceKm);
+    const floored = Math.max(raw, MIN_FEE);
+    return BigInt(
+      tricycle ? Math.round(floored * TRICYCLE_MULTIPLIER) : floored,
+    );
   }
 
-  async getHistory(customerId: string) {
+  // A page at a time, newest first. It returned the 20 newest and nothing
+  // else, while the Orders tab said "That's everything." — `before` (the last
+  // shown order's created_at) fetches the page after it.
+  async getHistory(
+    customerId: string,
+    query: { before?: string; limit?: number } = {},
+  ) {
     const orders = await this.prisma.orders.findMany({
-      where: { customer_id: customerId },
+      where: {
+        customer_id: customerId,
+        ...(query.before ? { created_at: { lt: new Date(query.before) } } : {}),
+      },
       orderBy: { created_at: 'desc' },
-      take: 20,
+      take: query.limit ?? 20,
       include: {
         merchant: { select: { name: true, image_url: true } },
         order_items: true,
@@ -616,11 +704,40 @@ export class OrdersService {
     if (order.status !== order_status.pending) {
       throw new ConflictException('Order can no longer be accepted');
     }
-    const updated = await this.prisma.orders.update({
-      where: { id: orderId },
-      data: { status: order_status.preparing },
-    });
+    // The status is re-checked in the write itself: the read above is not a
+    // lock, and a customer cancel landing between the two used to be
+    // overwritten — a canceled order revived as `preparing`.
+    const updated = await this.guardedWrite(
+      () =>
+        this.prisma.orders.update({
+          where: { id: orderId, status: order_status.pending },
+          data: { status: order_status.preparing },
+        }),
+      'Order can no longer be accepted',
+    );
     return this.serializeOrder(updated);
+  }
+
+  /**
+   * Runs a status write whose `where` names the status it moves from, and
+   * turns "no row matched" (P2025 — the order changed since it was read) into
+   * the same 409 the pre-check gives, instead of a 500.
+   */
+  private async guardedWrite<T>(
+    write: () => Promise<T>,
+    conflict: string,
+  ): Promise<T> {
+    try {
+      return await write();
+    } catch (err) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2025'
+      ) {
+        throw new ConflictException(conflict);
+      }
+      throw err;
+    }
   }
 
   async merchantMarkReady(
@@ -631,10 +748,14 @@ export class OrdersService {
     if (order.status !== order_status.preparing) {
       throw new ConflictException('Order is not being prepared');
     }
-    const updated = await this.prisma.orders.update({
-      where: { id: orderId },
-      data: { status: order_status.ready_for_pickup },
-    });
+    const updated = await this.guardedWrite(
+      () =>
+        this.prisma.orders.update({
+          where: { id: orderId, status: order_status.preparing },
+          data: { status: order_status.ready_for_pickup },
+        }),
+      'Order is not being prepared',
+    );
     return this.serializeOrder(updated);
   }
 
@@ -800,80 +921,89 @@ export class OrdersService {
       throw new BadRequestException('Illegal status transition');
     }
 
-    const order = await this.prisma.$transaction(async (tx) => {
-      const order = await tx.orders.update({
-        where: {
-          id: orderId,
-          assigned_rider_id: riderId,
-        },
-        data: {
-          status: newStatus,
-          // Parity with advance_order_status, which stamps this on the same
-          // transition. This server reimplements that RPC rather than calling
-          // it, and it had been writing `status` alone — so every delivery
-          // completed through this route left `delivered_at` null and only
-          // deliveries made through the RPC recorded a completion time.
-          // Server clock, set once, never client-supplied.
-          ...(newStatus === order_status.delivered
-            ? { delivered_at: new Date() }
-            : {}),
-        },
-      });
-
-      if (newStatus === order_status.delivered) {
-        // Idempotency guard — load-bearing, do not remove as "dead code":
-        // the transition guard above reads the order OUTSIDE this transaction,
-        // so two concurrent in_transit→delivered requests can BOTH pass it
-        // with the same stale read. Postgres's row lock serializes the two
-        // tx.orders.update calls, and THIS check is what stops the second
-        // transaction from crediting/debiting the rider twice.
-        const alreadyRewarded = await tx.rider_wallet_transactions.findFirst({
-          where: {
-            order_id: order.id,
-            type: 'credit_delivery_reward',
-          },
-        });
-
-        if (!alreadyRewarded) {
-          // Credit rider's delivery share (delivery_payout, not the full
-          // delivery_fee). Inlined here (rather than via LedgerService)
-          // because it must run inside this same transaction — amount is
-          // always positive, sign is inferred from `type` (append-only ledger).
-          await tx.rider_wallet_transactions.create({
+    const order = await this.guardedWrite(
+      () =>
+        this.prisma.$transaction(async (tx) => {
+          const order = await tx.orders.update({
+            where: {
+              id: orderId,
+              assigned_rider_id: riderId,
+              // The status this transition starts from, checked in the write: a
+              // cancel or unassign between the read above and this line used to
+              // be overwritten, reviving the order.
+              status: existing.status,
+            },
             data: {
-              rider_id: riderId,
-              type: 'credit_delivery_reward',
-              amount: BigInt(order.delivery_payout),
-              order_id: order.id,
+              status: newStatus,
+              // Parity with advance_order_status, which stamps this on the same
+              // transition. This server reimplements that RPC rather than calling
+              // it, and it had been writing `status` alone — so every delivery
+              // completed through this route left `delivered_at` null and only
+              // deliveries made through the RPC recorded a completion time.
+              // Server clock, set once, never client-supplied.
+              ...(newStatus === order_status.delivered
+                ? { delivered_at: new Date() }
+                : {}),
             },
           });
 
-          // Debit COD liability — amount is positive; sign comes from txn type
-          if (order.payment === 'cod') {
-            await tx.rider_wallet_transactions.create({
-              data: {
-                rider_id: riderId,
-                type: 'debit_cod_order',
-                amount: BigInt(order.total),
-                order_id: order.id,
-              },
-            });
+          if (newStatus === order_status.delivered) {
+            // Idempotency guard — load-bearing, do not remove as "dead code":
+            // the transition guard above reads the order OUTSIDE this transaction,
+            // so two concurrent in_transit→delivered requests can BOTH pass it
+            // with the same stale read. Postgres's row lock serializes the two
+            // tx.orders.update calls, and THIS check is what stops the second
+            // transaction from crediting/debiting the rider twice.
+            const alreadyRewarded =
+              await tx.rider_wallet_transactions.findFirst({
+                where: {
+                  order_id: order.id,
+                  type: 'credit_delivery_reward',
+                },
+              });
+
+            if (!alreadyRewarded) {
+              // Credit rider's delivery share (delivery_payout, not the full
+              // delivery_fee). Inlined here (rather than via LedgerService)
+              // because it must run inside this same transaction — amount is
+              // always positive, sign is inferred from `type` (append-only ledger).
+              await tx.rider_wallet_transactions.create({
+                data: {
+                  rider_id: riderId,
+                  type: 'credit_delivery_reward',
+                  amount: BigInt(order.delivery_payout),
+                  order_id: order.id,
+                },
+              });
+
+              // Debit COD liability — amount is positive; sign comes from txn type
+              if (order.payment === 'cod') {
+                await tx.rider_wallet_transactions.create({
+                  data: {
+                    rider_id: riderId,
+                    type: 'debit_cod_order',
+                    amount: BigInt(order.total),
+                    order_id: order.id,
+                  },
+                });
+              }
+
+              // S10. advance_order_status counts the trip in the same transaction
+              // as the ledger rows; this route did not, so every delivery the
+              // rider app completed left riders.total_trips where it was. Inside
+              // the reward guard, so a concurrent second call counts nothing.
+              // updateMany, like the RPC's plain UPDATE: no row is a no-op.
+              await tx.riders.updateMany({
+                where: { id: riderId },
+                data: { total_trips: { increment: 1 } },
+              });
+            }
           }
 
-          // S10. advance_order_status counts the trip in the same transaction
-          // as the ledger rows; this route did not, so every delivery the
-          // rider app completed left riders.total_trips where it was. Inside
-          // the reward guard, so a concurrent second call counts nothing.
-          // updateMany, like the RPC's plain UPDATE: no row is a no-op.
-          await tx.riders.updateMany({
-            where: { id: riderId },
-            data: { total_trips: { increment: 1 } },
-          });
-        }
-      }
-
-      return order;
-    });
+          return order;
+        }),
+      'This order changed. Refresh and try again.',
+    );
 
     return this.serializeOrder(order);
   }
@@ -895,7 +1025,13 @@ export class OrdersService {
         id: orderId,
         customer_id: customerId,
         assigned_rider_id: null,
-        status: { in: [order_status.pending, order_status.ready_for_pickup] },
+        // ready_for_pickup is cancellable only for merchant-less orders,
+        // which are born there (MM-4). A food/grocery order reaches it only
+        // after the store pressed Mark ready — the food is already cooked.
+        OR: [
+          { status: order_status.pending },
+          { status: order_status.ready_for_pickup, merchant_id: null },
+        ],
       },
       data: {
         status: order_status.canceled,

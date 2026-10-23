@@ -21,7 +21,7 @@ describe('StalledClaimService', () => {
   }
 
   let prisma: {
-    orders: { findMany: jest.Mock; updateMany: jest.Mock };
+    orders: { findMany: jest.Mock; updateMany: jest.Mock; groupBy: jest.Mock };
     order_assignment_events: { groupBy: jest.Mock; create: jest.Mock };
     push_outbox: { create: jest.Mock };
     $transaction: jest.Mock;
@@ -40,6 +40,8 @@ describe('StalledClaimService', () => {
       orders: {
         findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        // Riders busy on another live order — none unless a test says so.
+        groupBy: jest.fn().mockResolvedValue([]),
       },
       order_assignment_events: {
         groupBy: jest.fn().mockResolvedValue([]),
@@ -97,6 +99,43 @@ describe('StalledClaimService', () => {
       assigned_rider_id: null,
       status: 'ready_for_pickup',
     });
+    expect(result).toEqual({ released: 1, skipped: 0 });
+  });
+
+  // claimOrder lets a rider hold one order plus one queued behind it. The
+  // queued claim waits in `accepted` while the first is delivered, so it is
+  // not stalled — releasing it took "Up next" away mid-delivery.
+  it('leaves a queued claim alone while its rider is out on another order', async () => {
+    prisma.orders.findMany.mockResolvedValue([stalled()]);
+    prisma.orders.groupBy.mockResolvedValue([{ assigned_rider_id: 'rider-1' }]);
+
+    const result = await service.sweep();
+
+    expect(prisma.orders.updateMany).not.toHaveBeenCalled();
+    expect(result).toEqual({ released: 0, skipped: 0 });
+    const [busyQuery] = prisma.orders.groupBy.mock.calls[0] as [
+      { where: { assigned_rider_id: { in: string[] }; OR: unknown[] } },
+    ];
+    expect(busyQuery.where.assigned_rider_id).toEqual({ in: ['rider-1'] });
+    // Out on a live leg, or delivered within the release window.
+    expect(JSON.stringify(busyQuery.where.OR)).toContain('in_transit');
+    expect(JSON.stringify(busyQuery.where.OR)).toContain('delivered_at');
+  });
+
+  it('still releases a stalled claim whose rider has nothing else on', async () => {
+    prisma.orders.findMany.mockResolvedValue([
+      stalled(),
+      stalled({ id: 'ord-2', ref_no: 'CT-1002', assigned_rider_id: 'rider-2' }),
+    ]);
+    prisma.orders.groupBy.mockResolvedValue([{ assigned_rider_id: 'rider-1' }]);
+
+    const result = await service.sweep();
+
+    expect(prisma.orders.updateMany).toHaveBeenCalledTimes(1);
+    const [call] = prisma.orders.updateMany.mock.calls[0] as [
+      { where: { id: string } },
+    ];
+    expect(call.where.id).toBe('ord-2');
     expect(result).toEqual({ released: 1, skipped: 0 });
   });
 

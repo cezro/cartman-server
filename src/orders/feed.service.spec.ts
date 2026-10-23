@@ -225,13 +225,13 @@ describe('FeedService', () => {
     );
   });
 
-  it('queries candidates with take 50, orderBy created_at asc, including order_items and order_stops', async () => {
+  it('queries candidates with take 50, orderBy created_at desc (newest window), including order_items and order_stops', async () => {
     await service.rankedFeed('rider-1');
 
     expect(prisma.orders.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         take: 50,
-        orderBy: { created_at: 'asc' },
+        orderBy: { created_at: 'desc' },
         include: expect.objectContaining({
           order_items: true,
           // Multi-stop cards/active screens need the route without a second
@@ -274,6 +274,24 @@ describe('FeedService', () => {
       } finally {
         delete process.env.FEED_ACCEPT_WINDOW_MINUTES;
       }
+    });
+
+    // A food order enters the feed only after the kitchen's prep time; timing
+    // the window from placement made every such card arrive already expired.
+    it('times the window from when the order became claimable (updated_at), not when it was placed', async () => {
+      prisma.orders.findMany.mockResolvedValue([
+        baseOrder({
+          id: 'order-1',
+          created_at: minutesAgo(30),
+          updated_at: minutesAgo(1),
+        }),
+      ]);
+
+      const [entry] = await service.rankedFeed('rider-1');
+
+      const left = new Date(entry.expires_at).getTime() - Date.now();
+      expect(left).toBeGreaterThan(3.5 * 60_000);
+      expect(left).toBeLessThanOrEqual(4 * 60_000 + 1000);
     });
 
     it('an already-expired order still appears in the feed (the window is urgency, not a lifecycle rule)', async () => {

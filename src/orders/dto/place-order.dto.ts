@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsISO8601,
   ArrayMinSize,
   IsArray,
   IsIn,
@@ -87,6 +88,11 @@ export class PlaceMerchantOrderDto {
   @IsOptional()
   @IsString()
   dropoff_text?: string;
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /** Body for POST /orders/errand. */
@@ -117,6 +123,11 @@ export class PlaceErrandOrderDto {
   @IsOptional()
   @IsString()
   dropoff_text?: string;
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /** Body for POST /orders/courier and POST /orders/ride. */
@@ -169,6 +180,19 @@ export class PlacePickupDropoffOrderDto {
   @IsOptional()
   @IsObject()
   errand_payload?: Record<string, unknown> | null;
+
+  // Ride only: the Pasakay vehicle the customer chose. 'tricycle' is stored as
+  // orders.required_vehicle (so only tricycle riders are offered and can claim
+  // it) and priced at 1.3×, like the app's quote. Absent or 'motorcycle'
+  // leaves the ride open to any rider at the base fare. Courier ignores it.
+  @IsOptional()
+  @IsIn(['motorcycle', 'tricycle'])
+  required_vehicle?: 'motorcycle' | 'tricycle';
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /** One stop in a multi-stop order (cartman-server-endpoints.md §1). */
@@ -214,10 +238,18 @@ export class PlaceMultiStopOrderDto {
   notes?: string;
 
   // Sent by the client for interface parity with the contract body; the DB
-  // column defaults to cod when omitted.
+  // column defaults to cod when omitted. Cash on delivery is the only method
+  // with a collection path: delivery debits the rider's cash only for cod, so
+  // any other value would make the delivery free while the rider is still
+  // paid. Widen this when a payment provider exists.
   @IsOptional()
-  @IsIn(['cod', 'gcash', 'maya', 'card', 'cart_credits'])
-  payment?: 'cod' | 'gcash' | 'maya' | 'card' | 'cart_credits';
+  @IsIn(['cod'], { message: 'Only cash on delivery is available right now.' })
+  payment?: 'cod';
+
+  // Idempotency key for this placement attempt (see OrdersService.placeOnce).
+  @IsOptional()
+  @IsUUID()
+  client_order_id?: string;
 }
 
 /**
@@ -273,4 +305,22 @@ export class UpdateOrderStatusDto {
     | 'picked_up'
     | 'in_transit'
     | 'delivered';
+}
+
+/**
+ * Query for GET /orders/history: newest first, a page at a time. `before` is
+ * the created_at of the last order the app already shows; omitted, it is the
+ * first page — exactly the old behaviour, so older app builds see no change.
+ */
+export class OrderHistoryQueryDto {
+  @IsOptional()
+  @IsISO8601()
+  before?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  limit?: number;
 }

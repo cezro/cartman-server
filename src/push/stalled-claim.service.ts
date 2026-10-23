@@ -123,6 +123,35 @@ export class StalledClaimService {
     });
     const laps = new Map(priorReleases.map((r) => [r.order_id, r._count._all]));
 
+    // A rider may hold one order plus one queued behind it (claimOrder's
+    // MAX_ACTIVE_ORDERS_PER_RIDER). The queued one sits in `accepted` on
+    // purpose until the first is delivered, so it is not stalled while its
+    // rider is out on the other job — nor in the first minutes after that job
+    // ends, which is when its clock really starts. Releasing it mid-delivery
+    // took "Up next" away from a rider doing exactly what the app asked.
+    const riderIds = [
+      ...new Set(stalled.map((o) => o.assigned_rider_id).filter(Boolean)),
+    ] as string[];
+    const busy = await this.prisma.orders.groupBy({
+      by: ['assigned_rider_id'],
+      where: {
+        assigned_rider_id: { in: riderIds },
+        OR: [
+          {
+            status: {
+              in: [
+                order_status.arrived_at_merchant,
+                order_status.picked_up,
+                order_status.in_transit,
+              ],
+            },
+          },
+          { status: order_status.delivered, delivered_at: { gte: cutoff } },
+        ],
+      },
+    });
+    const busyRiders = new Set(busy.map((o) => o.assigned_rider_id));
+
     let released = 0;
     let skipped = 0;
 
@@ -134,6 +163,8 @@ export class StalledClaimService {
 
       const riderId = order.assigned_rider_id;
       if (!riderId) continue;
+      // Queued behind a live (or just-finished) delivery, not abandoned.
+      if (busyRiders.has(riderId)) continue;
 
       try {
         const didRelease = await this.prisma.$transaction(async (tx) => {

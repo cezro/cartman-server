@@ -4,6 +4,7 @@ import { PushDrainService } from './push-drain.service';
 import { StuckOrderService } from './stuck-order.service';
 import { ArrivalService } from './arrival.service';
 import { StalledClaimService } from './stalled-claim.service';
+import { OrderExpiryService } from './order-expiry.service';
 import {
   PushSendClient,
   PUSH_SENDER,
@@ -60,12 +61,17 @@ import {
     // Kept a separate class so StuckOrderService keeps its guarantee of
     // touching nothing, which is what makes it safe to run unattended.
     StalledClaimService,
+    // The last resort after both of those: an order nobody took in eight
+    // hours is cancelled (owner decision 2026-10-22), so it leaves the feed
+    // and the customer is told instead of waiting forever.
+    OrderExpiryService,
   ],
   exports: [
     PushDrainService,
     StuckOrderService,
     ArrivalService,
     StalledClaimService,
+    OrderExpiryService,
   ],
 })
 export class PushModule {}

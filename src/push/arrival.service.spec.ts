@@ -105,6 +105,56 @@ describe('ArrivalService', () => {
     expect(result).toEqual({ arrivals: 1, notified: 1 });
   });
 
+  // cross-lifecycle-17: orders with no store were skipped before pickup, so a
+  // Pasakay passenger was never told the driver had arrived.
+  const storeless = (type: string, status: string) =>
+    order({
+      type,
+      status,
+      merchant_id: null,
+      merchant: null,
+      pickup_lat: MERCHANT.lat,
+      pickup_lng: MERCHANT.lng,
+    });
+
+  it('tells a Pasakay passenger the driver has reached the pickup', async () => {
+    prisma.orders.findMany.mockResolvedValue([storeless('ride', 'accepted')]);
+    prisma.rider_locations.findMany.mockResolvedValue([fix(NEAR_MERCHANT)]);
+
+    await service.sweep();
+
+    const [{ data: rows }] = prisma.push_outbox.createMany.mock.calls[0] as [
+      { data: { user_id: string; event: string; title: string }[] },
+    ];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].user_id).toBe('cust-1');
+    expect(rows[0].event).toBe('rider.at_pickup');
+    expect(rows[0].title).toBe('Your driver is here');
+    expect(prisma.merchant_users.findMany).not.toHaveBeenCalled();
+  });
+
+  it('does not tell a ride passenger the rider is at their own destination', async () => {
+    prisma.orders.findMany.mockResolvedValue([storeless('ride', 'in_transit')]);
+    prisma.rider_locations.findMany.mockResolvedValue([fix(NEAR_DROPOFF)]);
+
+    expect(await service.sweep()).toEqual({ arrivals: 0, notified: 0 });
+  });
+
+  it('tells a courier customer the rider is at the pickup point', async () => {
+    prisma.orders.findMany.mockResolvedValue([
+      storeless('pickup_delivery', 'accepted'),
+    ]);
+    prisma.rider_locations.findMany.mockResolvedValue([fix(NEAR_MERCHANT)]);
+
+    await service.sweep();
+
+    const [{ data: rows }] = prisma.push_outbox.createMany.mock.calls[0] as [
+      { data: { event: string; title: string }[] },
+    ];
+    expect(rows[0].event).toBe('rider.at_pickup');
+    expect(rows[0].title).toBe('Your rider is at the pickup');
+  });
+
   // ── Review findings on this sweep, each pinned by the shape of the query
   // rather than by its result — the defects were invisible in the outcome and
   // only showed up in what was sent to Postgres.
@@ -133,6 +183,7 @@ describe('ArrivalService', () => {
     expect(args.where.event.in).toEqual([
       'rider.at_merchant',
       'rider.at_dropoff',
+      'rider.at_pickup',
     ]);
   });
 

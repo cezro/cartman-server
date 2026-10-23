@@ -56,6 +56,12 @@ const CARRYING: order_status[] = [
 
 const AT_MERCHANT_EVENT = 'rider.at_merchant';
 const AT_DROPOFF_EVENT = 'rider.at_dropoff';
+/**
+ * The rider reached the pickup of an order with no store (ride, courier,
+ * Pabili, multi-stop). There is no store to tell, and the person waiting is
+ * the customer — a Pasakay passenger used to get no "driver is here" at all.
+ */
+const AT_PICKUP_EVENT = 'rider.at_pickup';
 
 /**
  * H10 — arrival detection.
@@ -103,6 +109,9 @@ export class ArrivalService {
         customer_id: true,
         merchant_id: true,
         status: true,
+        type: true,
+        pickup_lat: true,
+        pickup_lng: true,
         dropoff_lat: true,
         dropoff_lng: true,
         merchant: { select: { name: true, lat: true, lng: true } },
@@ -151,9 +160,17 @@ export class ArrivalService {
       // Measured against the endpoint the rider is actually heading for.
       // Comparing against the wrong one announces an arrival at a place they
       // have not gone to yet.
+      // Before pickup that is the store's pin, or — for an order with no
+      // store — the pickup point itself, which used to be skipped entirely.
+      const storeless = o.merchant_id === null;
+      // A ride's drop-off is the passenger's own destination: they are on the
+      // bike, so "your rider is here" there is noise.
+      if (carrying && o.type === 'ride') continue;
       const target = carrying
         ? { lat: o.dropoff_lat, lng: o.dropoff_lng }
-        : { lat: o.merchant?.lat, lng: o.merchant?.lng };
+        : storeless
+          ? { lat: o.pickup_lat, lng: o.pickup_lng }
+          : { lat: o.merchant?.lat, lng: o.merchant?.lng };
 
       // Both are nullable in the schema. A missing coordinate is not 0,0 —
       // that is a point in the Gulf of Guinea, and treating it as the endpoint
@@ -166,7 +183,11 @@ export class ArrivalService {
 
       arrived.push({
         order: o,
-        event: carrying ? AT_DROPOFF_EVENT : AT_MERCHANT_EVENT,
+        event: carrying
+          ? AT_DROPOFF_EVENT
+          : storeless
+            ? AT_PICKUP_EVENT
+            : AT_MERCHANT_EVENT,
       });
     }
     if (arrived.length === 0) return { arrivals: 0, notified: 0 };
@@ -186,6 +207,20 @@ export class ArrivalService {
 
     const rows = arrived.flatMap(({ order: o, event }) => {
       const ref = o.ref_no ?? '';
+      if (event === AT_PICKUP_EVENT) {
+        const ride = o.type === 'ride';
+        return [
+          {
+            user_id: o.customer_id,
+            event,
+            title: ride ? 'Your driver is here' : 'Your rider is at the pickup',
+            body: ride
+              ? `Your driver has arrived at the pickup point for ${ref}.`
+              : `Your rider has arrived at the pickup point for ${ref}.`,
+            data: { order_id: o.id },
+          },
+        ];
+      }
       if (event === AT_DROPOFF_EVENT) {
         return [
           {
@@ -230,7 +265,7 @@ export class ArrivalService {
     // and it is why those rows must never be pruned.
     const announced = await this.prisma.push_outbox.findMany({
       where: {
-        event: { in: [AT_MERCHANT_EVENT, AT_DROPOFF_EVENT] },
+        event: { in: [AT_MERCHANT_EVENT, AT_DROPOFF_EVENT, AT_PICKUP_EVENT] },
         user_id: { in: [...new Set(rows.map((r) => r.user_id))] },
         created_at: { gte: new Date(Date.now() - DEDUP_WINDOW_MS) },
       },
