@@ -106,12 +106,24 @@ export class ProfilesService {
    */
   async registerDeviceToken(userId: string, dto: RegisterDeviceTokenDto) {
     const platform = dto.platform ?? 'android';
-    return this.prisma.device_tokens.upsert({
-      where: {
-        user_id_token: { user_id: userId, token: dto.token },
-      },
-      create: { user_id: userId, token: dto.token, platform },
-      update: { platform },
+    // A token identifies one app install, so registering it takes it away
+    // from any other account first. Without that, a session that ended
+    // without an unregister (a forced sign-out, a sign-out while offline)
+    // left the row on the previous account, and this phone kept receiving
+    // that account's order updates while signed in as someone else. FCM never
+    // reports a still-installed token as UNREGISTERED, so nothing else
+    // would collect it.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.device_tokens.deleteMany({
+        where: { token: dto.token, NOT: { user_id: userId } },
+      });
+      return tx.device_tokens.upsert({
+        where: {
+          user_id_token: { user_id: userId, token: dto.token },
+        },
+        create: { user_id: userId, token: dto.token, platform },
+        update: { platform },
+      });
     });
   }
 

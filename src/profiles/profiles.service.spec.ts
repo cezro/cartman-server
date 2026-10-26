@@ -197,6 +197,21 @@ describe('ProfilesService', () => {
       expect(prisma.device_tokens.upsert).toHaveBeenCalledTimes(1);
     });
 
+    it('takes the token away from any other account first (web-and-platform-10)', async () => {
+      prisma.device_tokens.deleteMany.mockResolvedValue({ count: 1 });
+      prisma.device_tokens.upsert.mockResolvedValue({ id: 'dt-2' });
+
+      await service.registerDeviceToken('user-b', { token: 'tok-abc' });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.device_tokens.deleteMany).toHaveBeenCalledWith({
+        where: { token: 'tok-abc', NOT: { user_id: 'user-b' } },
+      });
+      expect(
+        prisma.device_tokens.deleteMany.mock.invocationCallOrder[0],
+      ).toBeLessThan(prisma.device_tokens.upsert.mock.invocationCallOrder[0]);
+    });
+
     it('defaults platform to android when omitted', async () => {
       prisma.device_tokens.upsert.mockResolvedValue({
         id: 'dt-1',
