@@ -7,6 +7,7 @@ describe('ProfilesService', () => {
     profiles: { findUnique: jest.Mock };
     addresses: {
       findMany: jest.Mock;
+      findFirst: jest.Mock;
       create: jest.Mock;
       update: jest.Mock;
       updateMany: jest.Mock;
@@ -25,6 +26,7 @@ describe('ProfilesService', () => {
       profiles: { findUnique: jest.fn() },
       addresses: {
         findMany: jest.fn(),
+        findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn(),
@@ -142,6 +144,20 @@ describe('ProfilesService', () => {
       });
     });
 
+    it('ignores is_default: false, so the default cannot be switched off (cust-browse-errands-ride-13)', async () => {
+      prisma.addresses.update.mockResolvedValue({ id: 'addr-1' });
+
+      await service.updateAddress('user-1', 'addr-1', {
+        label: 'Bahay',
+        is_default: false,
+      });
+
+      expect(prisma.addresses.update).toHaveBeenCalledWith({
+        where: { id: 'addr-1', user_id: 'user-1' },
+        data: { label: 'Bahay' },
+      });
+    });
+
     it('does not touch other addresses when is_default is not part of the update', async () => {
       prisma.addresses.update.mockResolvedValue({ id: 'addr-1' });
 
@@ -149,6 +165,40 @@ describe('ProfilesService', () => {
 
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(prisma.addresses.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteAddress', () => {
+    it('hands the default to the oldest remaining address', async () => {
+      prisma.addresses.delete.mockResolvedValue({
+        id: 'addr-1',
+        is_default: true,
+      });
+      prisma.addresses.findFirst.mockResolvedValue({ id: 'addr-2' });
+
+      await service.deleteAddress('user-1', 'addr-1');
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.addresses.findFirst).toHaveBeenCalledWith({
+        where: { user_id: 'user-1' },
+        orderBy: { created_at: 'asc' },
+      });
+      expect(prisma.addresses.update).toHaveBeenCalledWith({
+        where: { id: 'addr-2' },
+        data: { is_default: true },
+      });
+    });
+
+    it('promotes nothing when the deleted address was not the default', async () => {
+      prisma.addresses.delete.mockResolvedValue({
+        id: 'addr-3',
+        is_default: false,
+      });
+
+      await service.deleteAddress('user-1', 'addr-3');
+
+      expect(prisma.addresses.findFirst).not.toHaveBeenCalled();
+      expect(prisma.addresses.update).not.toHaveBeenCalled();
     });
   });
 

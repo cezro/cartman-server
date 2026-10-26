@@ -71,9 +71,15 @@ export class ProfilesService {
     },
   ) {
     if (!data.is_default) {
+      // A default is changed by choosing another one, never by switching it
+      // off: an explicit `false` left a customer with no default, and Home
+      // then said "Set address" while checkout and placement quietly fell
+      // back to the oldest row.
+      const rest = { ...data };
+      delete rest.is_default;
       return this.prisma.addresses.update({
         where: { id: addressId, user_id: userId },
-        data,
+        data: rest,
       });
     }
 
@@ -91,9 +97,30 @@ export class ProfilesService {
     });
   }
 
+  /**
+   * Deleting the default hands the role to the oldest remaining address, in
+   * the same transaction, so a customer with addresses always has exactly
+   * one default. It used to leave none, and the screens disagreed about where
+   * an order would go.
+   */
   async deleteAddress(userId: string, addressId: string) {
-    return this.prisma.addresses.delete({
-      where: { id: addressId, user_id: userId },
+    return this.prisma.$transaction(async (tx) => {
+      const deleted = await tx.addresses.delete({
+        where: { id: addressId, user_id: userId },
+      });
+      if (deleted.is_default) {
+        const next = await tx.addresses.findFirst({
+          where: { user_id: userId },
+          orderBy: { created_at: 'asc' },
+        });
+        if (next) {
+          await tx.addresses.update({
+            where: { id: next.id },
+            data: { is_default: true },
+          });
+        }
+      }
+      return deleted;
     });
   }
 
