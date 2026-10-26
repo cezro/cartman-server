@@ -152,6 +152,18 @@ export class StalledClaimService {
     });
     const busyRiders = new Set(busy.map((o) => o.assigned_rider_id));
 
+    // A rider whose phone is still reporting is on the way, not gone. While
+    // they ride to the store the order sits in `accepted` with no row write,
+    // so `updated_at` alone released claims more than ten minutes' ride away
+    // from riders driving to them, and the push told them it "hadn't moved".
+    // Keyed on the rider (rider_locations is indexed rider_id, recorded_at):
+    // the 60s heartbeat keeps any live app inside this window.
+    const reporting = await this.prisma.rider_locations.groupBy({
+      by: ['rider_id'],
+      where: { rider_id: { in: riderIds }, recorded_at: { gte: cutoff } },
+    });
+    const reportingRiders = new Set(reporting.map((r) => r.rider_id));
+
     let released = 0;
     let skipped = 0;
 
@@ -165,6 +177,8 @@ export class StalledClaimService {
       if (!riderId) continue;
       // Queued behind a live (or just-finished) delivery, not abandoned.
       if (busyRiders.has(riderId)) continue;
+      // Still sending GPS: on the way.
+      if (reportingRiders.has(riderId)) continue;
 
       try {
         const didRelease = await this.prisma.$transaction(async (tx) => {
