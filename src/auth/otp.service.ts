@@ -214,6 +214,18 @@ export class OtpService {
         });
 
         if (linksProfile) {
+          // Proving the number is what makes it yours. Another account that
+          // only typed it at sign-up, never verified, gives it up here; it
+          // used to hold the UNIQUE slot, so the real owner could never
+          // verify. A verified holder still wins (the 409 below).
+          await tx.profiles.updateMany({
+            where: {
+              phone: identifier,
+              phone_verified: false,
+              NOT: { id: targetUserId as string },
+            },
+            data: { phone: null },
+          });
           await tx.profiles.update({
             where: { id: targetUserId as string },
             data: { phone_verified: true, phone: identifier },
