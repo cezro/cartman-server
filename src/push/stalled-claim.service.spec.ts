@@ -23,6 +23,7 @@ describe('StalledClaimService', () => {
   let prisma: {
     orders: { findMany: jest.Mock; updateMany: jest.Mock; groupBy: jest.Mock };
     order_assignment_events: { groupBy: jest.Mock; create: jest.Mock };
+    rider_locations: { groupBy: jest.Mock };
     push_outbox: { create: jest.Mock };
     $transaction: jest.Mock;
   };
@@ -47,6 +48,8 @@ describe('StalledClaimService', () => {
         groupBy: jest.fn().mockResolvedValue([]),
         create: jest.fn().mockResolvedValue({}),
       },
+      // Riders still reporting GPS — none unless a test says so.
+      rider_locations: { groupBy: jest.fn().mockResolvedValue([]) },
       push_outbox: { create: jest.fn().mockResolvedValue({}) },
       $transaction: jest.fn(),
     };
@@ -120,6 +123,31 @@ describe('StalledClaimService', () => {
     // Out on a live leg, or delivered within the release window.
     expect(JSON.stringify(busyQuery.where.OR)).toContain('in_transit');
     expect(JSON.stringify(busyQuery.where.OR)).toContain('delivered_at');
+  });
+
+  // web-and-platform-01: riding to the store writes nothing to the order, so
+  // `updated_at` alone released riders who were on their way.
+  it('leaves a claim alone while its rider is still sending GPS', async () => {
+    prisma.orders.findMany.mockResolvedValue([
+      stalled(),
+      stalled({ id: 'ord-2', ref_no: 'CT-1002', assigned_rider_id: 'rider-2' }),
+    ]);
+    prisma.rider_locations.groupBy.mockResolvedValue([{ rider_id: 'rider-1' }]);
+
+    const result = await service.sweep();
+
+    const [fixQuery] = prisma.rider_locations.groupBy.mock.calls[0] as [
+      { where: { rider_id: { in: string[] }; recorded_at: { gte: Date } } },
+    ];
+    expect(fixQuery.where.rider_id).toEqual({ in: ['rider-1', 'rider-2'] });
+    expect(fixQuery.where.recorded_at.gte).toBeInstanceOf(Date);
+    // Only the silent rider's claim goes back on the feed.
+    expect(prisma.orders.updateMany).toHaveBeenCalledTimes(1);
+    const [call] = prisma.orders.updateMany.mock.calls[0] as [
+      { where: { id: string } },
+    ];
+    expect(call.where.id).toBe('ord-2');
+    expect(result).toEqual({ released: 1, skipped: 0 });
   });
 
   it('still releases a stalled claim whose rider has nothing else on', async () => {

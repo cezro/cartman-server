@@ -77,6 +77,29 @@ export class PushSendClient implements PushSender {
       return { ok: false, error };
     }
 
+    // push-send answers 200 whatever FCM said. Every device refused (a wrong
+    // credential, quota, FCM down) used to be stamped as sent and never
+    // retried. No tokens at all, or FCM not configured, stay a success: that
+    // is a decision (see the spec), not a failure.
+    const body = (await res.json().catch(() => null)) as {
+      sent?: number;
+      targeted?: number;
+      failed?: { reason?: string }[];
+    } | null;
+    if (
+      body &&
+      (body.targeted ?? 0) > 0 &&
+      body.sent === 0 &&
+      Array.isArray(body.failed) &&
+      body.failed.length > 0
+    ) {
+      const reasons = body.failed.map((f) => f?.reason ?? '?').join(', ');
+      const error =
+        `push-send: 0 of ${body.targeted} delivered (${reasons})`.slice(0, 200);
+      this.logger.warn(error);
+      return { ok: false, error };
+    }
+
     return { ok: true };
   }
 }

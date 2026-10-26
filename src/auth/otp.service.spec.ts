@@ -44,6 +44,7 @@ describe('OtpService', () => {
     };
     profiles: {
       update: UpdateFn;
+      updateMany: UpdateFn;
     };
     $transaction: TransactionFn;
   };
@@ -70,6 +71,9 @@ describe('OtpService', () => {
         update: jest
           .fn<Promise<unknown>, [Record<string, unknown>]>()
           .mockResolvedValue({}),
+        updateMany: jest
+          .fn<Promise<unknown>, [Record<string, unknown>]>()
+          .mockResolvedValue({ count: 0 }),
       },
       // Interactive-transaction stub: runs the callback against the same
       // mocked client, so every existing assertion on prisma.otp_codes /
@@ -283,6 +287,29 @@ describe('OtpService', () => {
           }) as Record<string, unknown>,
         }),
       );
+    });
+
+    it('takes the number from an account that never verified it (cust-entry-account-02)', async () => {
+      const code = '555666';
+      const codeHash = hashOtp('+639171234567', code);
+
+      prisma.otp_codes.findFirst.mockResolvedValue({
+        id: 'otp-9',
+        code_hash: codeHash,
+        attempts: 0,
+        user_id: 'user-1',
+      });
+
+      await service.verifyOtp('+639171234567', code, 'user-1');
+
+      expect(prisma.profiles.updateMany).toHaveBeenCalledWith({
+        where: {
+          phone: '+639171234567',
+          phone_verified: false,
+          NOT: { id: 'user-1' },
+        },
+        data: { phone: null },
+      });
     });
 
     it('rejects when the stored user_id differs from the caller id', async () => {

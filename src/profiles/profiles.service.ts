@@ -71,9 +71,15 @@ export class ProfilesService {
     },
   ) {
     if (!data.is_default) {
+      // A default is changed by choosing another one, never by switching it
+      // off: an explicit `false` left a customer with no default, and Home
+      // then said "Set address" while checkout and placement quietly fell
+      // back to the oldest row.
+      const rest = { ...data };
+      delete rest.is_default;
       return this.prisma.addresses.update({
         where: { id: addressId, user_id: userId },
-        data,
+        data: rest,
       });
     }
 
@@ -91,9 +97,30 @@ export class ProfilesService {
     });
   }
 
+  /**
+   * Deleting the default hands the role to the oldest remaining address, in
+   * the same transaction, so a customer with addresses always has exactly
+   * one default. It used to leave none, and the screens disagreed about where
+   * an order would go.
+   */
   async deleteAddress(userId: string, addressId: string) {
-    return this.prisma.addresses.delete({
-      where: { id: addressId, user_id: userId },
+    return this.prisma.$transaction(async (tx) => {
+      const deleted = await tx.addresses.delete({
+        where: { id: addressId, user_id: userId },
+      });
+      if (deleted.is_default) {
+        const next = await tx.addresses.findFirst({
+          where: { user_id: userId },
+          orderBy: { created_at: 'asc' },
+        });
+        if (next) {
+          await tx.addresses.update({
+            where: { id: next.id },
+            data: { is_default: true },
+          });
+        }
+      }
+      return deleted;
     });
   }
 
@@ -106,12 +133,24 @@ export class ProfilesService {
    */
   async registerDeviceToken(userId: string, dto: RegisterDeviceTokenDto) {
     const platform = dto.platform ?? 'android';
-    return this.prisma.device_tokens.upsert({
-      where: {
-        user_id_token: { user_id: userId, token: dto.token },
-      },
-      create: { user_id: userId, token: dto.token, platform },
-      update: { platform },
+    // A token identifies one app install, so registering it takes it away
+    // from any other account first. Without that, a session that ended
+    // without an unregister (a forced sign-out, a sign-out while offline)
+    // left the row on the previous account, and this phone kept receiving
+    // that account's order updates while signed in as someone else. FCM never
+    // reports a still-installed token as UNREGISTERED, so nothing else
+    // would collect it.
+    return this.prisma.$transaction(async (tx) => {
+      await tx.device_tokens.deleteMany({
+        where: { token: dto.token, NOT: { user_id: userId } },
+      });
+      return tx.device_tokens.upsert({
+        where: {
+          user_id_token: { user_id: userId, token: dto.token },
+        },
+        create: { user_id: userId, token: dto.token, platform },
+        update: { platform },
+      });
     });
   }
 

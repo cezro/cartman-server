@@ -80,6 +80,58 @@ describe('PushSendClient', () => {
     await expect(client.send(payload)).resolves.toEqual({ ok: true });
   });
 
+  // web-and-platform-02: push-send answers 200 whatever FCM said.
+  it('treats a 200 where every device was refused as a failure', async () => {
+    const client = new PushSendClient(
+      'https://p.co',
+      'k',
+      jest
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            '{"sent":0,"targeted":2,"pruned":0,"failed":[{"reason":"SENDER_ID_MISMATCH"},{"reason":"UNAVAILABLE"}]}',
+            { status: 200 },
+          ),
+        ),
+    );
+
+    await expect(client.send(payload)).resolves.toEqual({
+      ok: false,
+      error: 'push-send: 0 of 2 delivered (SENDER_ID_MISMATCH, UNAVAILABLE)',
+    });
+  });
+
+  it('treats a partial delivery as success', async () => {
+    const client = new PushSendClient(
+      'https://p.co',
+      'k',
+      jest
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            '{"sent":1,"targeted":2,"failed":[{"reason":"UNAVAILABLE"}]}',
+            { status: 200 },
+          ),
+        ),
+    );
+
+    await expect(client.send(payload)).resolves.toEqual({ ok: true });
+  });
+
+  it('treats a recipient with no devices as success', async () => {
+    const client = new PushSendClient(
+      'https://p.co',
+      'k',
+      jest
+        .fn()
+        .mockResolvedValue(
+          new Response('{"sent":0,"targeted":0,"failed":[]}', { status: 200 }),
+        ),
+    );
+
+    await expect(client.send(payload)).resolves.toEqual({ ok: true });
+  });
+
   it('reports a non-2xx as a failure carrying the status and body', async () => {
     const client = new PushSendClient(
       'https://p.co',
